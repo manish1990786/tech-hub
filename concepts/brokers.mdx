@@ -1,5 +1,5 @@
 ---
-title: "Kafka Brokers: The Heart of Your Kafka Cluster"
+title: "Kafka Brokers: Role and Configuration in a Cluster"
 sidebarTitle: "Brokers"
 description: "Understand Kafka brokers: how they store data, handle replication, elect leaders, and form a cluster. Learn key broker configuration and failure scenarios."
 ---
@@ -34,7 +34,7 @@ In **KRaft mode**, brokers register with the controller quorum and the metadata 
 
 Every partition replica stored on a broker is represented as a **log directory** on disk. Inside that directory, Kafka organizes data into **log segments** — chunks of the log that are periodically rolled over to keep individual files at a manageable size.
 
-```
+```text
 /var/kafka/data/
   orders-0/                      ← Partition 0 of the "orders" topic
     00000000000000000000.log      ← Data file (actual messages)
@@ -55,7 +55,7 @@ For each partition, exactly one broker is the **leader** and the rest are **foll
 
 The **In-Sync Replica (ISR) list** is the set of replicas (leader + followers) that are fully caught up with the leader's log. A follower is removed from the ISR if it falls behind by more than `replica.lag.time.max.ms` (default: 30 seconds). A follower that has been removed will be added back to the ISR once it catches up again.
 
-```
+```text
 Partition 0 — Replication Factor 3
 
   Broker 1: Leader (offset 0–999)     ← accepts all reads and writes

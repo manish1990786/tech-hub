@@ -1,5 +1,5 @@
 ---
-title: "Kafka Console Producer and Consumer CLI Reference"
+title: "Kafka Console Producer and Consumer CLI Reference Guide"
 sidebarTitle: "Console CLI"
 description: "Full reference for kafka-console-producer.sh and kafka-console-consumer.sh. Options for keys, headers, formatters, partitions, and offset control."
 ---
@@ -188,8 +188,8 @@ bin/kafka-console-consumer.sh \
 
 Sample output:
 
-```
-CreateTime:1705276800000 | user-123 | {"event":"login","ip":"10.0.0.1"}
+```text
+CreateTime:1705276800000 | user-123 | {"event":"login","ip":"203.0.113.1"}
 CreateTime:1705276801234 | user-456 | {"event":"purchase","item":"widget"}
 ```
 
@@ -283,7 +283,7 @@ bin/kafka-producer-perf-test.sh \
 
 Sample output:
 
-```
+```text
 500000 records sent, 124567.9 records/sec (121.65 MB/sec), 3.2 ms avg latency, 289.0 ms max latency.
 1000000 records sent, 127843.0 records/sec (124.85 MB/sec), 2.9 ms avg latency, 289.0 ms max latency, 1 ms 50th, 5 ms 95th, 12 ms 99th, 289 ms 99.9th.
 ```

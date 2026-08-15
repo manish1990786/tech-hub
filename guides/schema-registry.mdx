@@ -1,7 +1,7 @@
 ---
-title: "Schema Registry: Enforce Data Contracts in Kafka"
+title: "Schema Registry: Kafka Data Contracts and Evolution"
 sidebarTitle: "Schema Registry"
-description: "Learn how to use Confluent Schema Registry to manage Avro, JSON Schema, and Protobuf schemas in Kafka. Covers schema evolution, compatibility modes, and serializers."
+description: "Use Confluent Schema Registry to manage Avro, JSON Schema, and Protobuf schemas in Kafka. Covers schema evolution, compatibility modes, and serializers."
 ---
 
 Without a schema registry, Kafka is a pipe that moves bytes. Producers choose the message format, consumers decode it, and if a producer changes the format without telling the consumers, everything breaks. Schema Registry solves this coordination problem by acting as a central catalogue where producers register schemas and consumers look them up — turning an implicit agreement into an enforced contract. Every message payload is prefixed with a schema ID, so consumers always know exactly which schema version to use to decode it.

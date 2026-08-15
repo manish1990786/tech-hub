@@ -1,5 +1,5 @@
 ---
-title: "Create Your First Kafka Topic with Examples"
+title: "How to Create and Manage Your First Kafka Topic in 3.7"
 sidebarTitle: "First Topic"
 description: "Learn how to create, describe, list, and delete Kafka topics using kafka-topics.sh. Understand partitions, replication factor, and topic configurations."
 ---
@@ -20,7 +20,7 @@ bin/kafka-topics.sh --create \
 
 When the command succeeds, Kafka prints:
 
-```
+```text
 Created topic my-first-topic.
 ```
 
@@ -59,7 +59,7 @@ bin/kafka-topics.sh --list --bootstrap-server localhost:9092
 
 The output is a plain newline-separated list of topic names:
 
-```
+```text
 my-first-topic
 quickstart-events
 ```
@@ -78,7 +78,7 @@ bin/kafka-topics.sh --describe \
 
 Example output:
 
-```
+```text
 Topic: my-first-topic   TopicId: AbCdEfGhIjKlMnOpQrStUv  PartitionCount: 3  ReplicationFactor: 1  Configs: segment.bytes=1073741824
   Topic: my-first-topic  Partition: 0  Leader: 1  Replicas: 1  Isr: 1
   Topic: my-first-topic  Partition: 1  Leader: 1  Replicas: 1  Isr: 1

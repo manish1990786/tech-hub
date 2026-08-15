@@ -1,7 +1,7 @@
 ---
-title: "kafka-topics.sh and kafka-configs.sh Reference"
+title: "Kafka Topics, Consumer Groups, and Configs CLI Guide"
 sidebarTitle: "Topics CLI"
-description: "Full reference for kafka-topics.sh and kafka-configs.sh. Create, list, describe, delete topics and manage dynamic configuration overrides from the command line."
+description: "Full CLI reference for kafka-topics.sh, kafka-consumer-groups.sh, and kafka-configs.sh. Manage topics, reset offsets, and update dynamic config overrides."
 ---
 
 Three CLI tools cover the vast majority of Kafka administrative work: `kafka-topics.sh` for managing topic structure, `kafka-consumer-groups.sh` for inspecting and resetting consumer positions, and `kafka-configs.sh` for reading and writing dynamic configuration overrides. This page walks through every major subcommand for each tool with practical, copy-paste-ready examples.
@@ -53,7 +53,7 @@ bin/kafka-topics.sh --describe \
 
 Sample output:
 
-```
+```text
 Topic: my-topic   PartitionCount: 6   ReplicationFactor: 3   Configs: retention.ms=86400000
   Topic: my-topic   Partition: 0   Leader: 1   Replicas: 1,2,3   Isr: 1,2,3
   Topic: my-topic   Partition: 1   Leader: 2   Replicas: 2,3,1   Isr: 2,3,1
@@ -138,7 +138,7 @@ bin/kafka-consumer-groups.sh --describe \
 
 Sample output:
 
-```
+```text
 GROUP               TOPIC      PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG  CONSUMER-ID
 my-consumer-group   my-topic   0          1042            1042            0    consumer-1
 my-consumer-group   my-topic   1          978             990             12   consumer-2

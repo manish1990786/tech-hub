@@ -1,5 +1,5 @@
 ---
-title: "Apache Kafka Architecture: A Complete Overview"
+title: "Apache Kafka Architecture: A Complete Guide Overview"
 sidebarTitle: "Architecture"
 description: "Understand Apache Kafka's distributed architecture including brokers, topics, partitions, producers, consumers, and how they work together in a cluster."
 ---
@@ -16,7 +16,7 @@ A Kafka **cluster** is a group of one or more **brokers** — server processes t
 
 Within a cluster, partitions follow a **leader/follower** replication model. For every partition, exactly one broker acts as the **leader** — it handles all reads and writes for that partition. The remaining brokers that hold a copy of that partition are **followers**. Followers continuously replicate data from the leader and remain ready to take over if the leader fails.
 
-```
+```text
                   ┌─────────────────────────────────────────────┐
                   │               Kafka Cluster                 │
                   │                                             │

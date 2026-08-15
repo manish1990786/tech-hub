@@ -1,5 +1,5 @@
 ---
-title: "Securing Apache Kafka: TLS, SASL, and ACLs"
+title: "Securing Apache Kafka: TLS, SASL, and ACL Configuration"
 sidebarTitle: "Security"
 description: "Secure your Kafka cluster with TLS encryption, SASL authentication, and Access Control Lists (ACLs). Step-by-step guides for each security mechanism."
 ---
@@ -103,7 +103,7 @@ SASL (Simple Authentication and Security Layer) adds identity to your connection
 
   Create a JAAS configuration file on each broker:
 
-  ```
+  ```conf
   // jaas.conf
   KafkaServer {
     org.apache.kafka.common.security.plain.PlainLoginModule required
@@ -151,7 +151,7 @@ SASL (Simple Authentication and Security Layer) adds identity to your connection
 
   Client `jaas.conf`:
 
-  ```
+  ```conf
   KafkaClient {
     org.apache.kafka.common.security.scram.ScramLoginModule required
     username="alice"

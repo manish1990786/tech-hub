@@ -1,7 +1,7 @@
 ---
 title: "Mastering Kafka Producers: Batching, Compression, and EOS"
 sidebarTitle: "Producers Deep Dive"
-description: "A deep-dive into Kafka producer internals: message batching, compression algorithms, idempotent producers, transactions, and exactly-once semantics with code examples."
+description: "A deep-dive into Kafka producer internals: batching, compression, idempotent delivery, transactions, and exactly-once semantics with Java examples."
 ---
 
 Kafka producers are more sophisticated than they first appear. Behind a simple `producer.send()` call lies a multi-threaded pipeline that batches records, compresses payloads, manages retries, and — when configured correctly — guarantees that every message is delivered exactly once. Understanding these internals helps you tune throughput, reduce latency, and reason about failure scenarios before they hit production.
@@ -10,7 +10,7 @@ Kafka producers are more sophisticated than they first appear. Behind a simple `
 
 When you call `producer.send()`, the record does not immediately travel over the network. Instead it passes through several internal components before it leaves the JVM.
 
-```
+```text
 Your Application Thread
         │
         ▼
@@ -192,7 +192,7 @@ Kafka producers support three delivery semantics, controlled by the `acks` confi
 
 Enabling idempotence tells Kafka to deduplicate records on the broker side. When you set `enable.idempotence=true`, the broker assigns the producer a **Producer ID (PID)** and tracks a monotonically increasing **sequence number** per partition.
 
-```
+```text
 Producer                              Broker
    │                                     │
    │── ProduceRequest (PID=42, seq=1) ──▶│  Write record, remember seq=1

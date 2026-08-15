@@ -1,5 +1,5 @@
 ---
-title: "Kafka Consumers: Reading Messages from Topics"
+title: "Kafka Consumers: How to Read Messages from a Topic"
 sidebarTitle: "Consumers"
 description: "Learn how Kafka consumers subscribe to topics and read messages. Covers poll loop, offset management, auto-commit, manual commit, and consumer groups."
 ---
@@ -10,7 +10,7 @@ A Kafka **consumer** is a client application that subscribes to one or more topi
 
 The core pattern of every Kafka consumer is the **poll loop**. Your consumer calls `poll()` repeatedly in a loop, processes the returned batch of records, and then commits its progress. This loop continues until you stop the application.
 
-```
+```text
 ┌──────────────────────────────────────────────────────────┐
 │                      Consumer Poll Loop                  │
 │                                                          │
@@ -41,7 +41,7 @@ Every record in a Kafka partition has a unique, monotonically increasing integer
 
 Committed offsets are stored in a special internal Kafka topic called **`__consumer_offsets`**. This topic is managed automatically by Kafka and is replicated like any other topic for durability.
 
-```
+```text
 Partition 0:  [0]  [1]  [2]  [3]  [4]  [5]  [6]  [7]  [8]  ...
                               ↑              ↑
                     Committed Offset=3   Current Offset=6

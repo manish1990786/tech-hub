@@ -1,5 +1,5 @@
 ---
-title: "Apache Kafka FAQ: Common Questions Answered"
+title: "Apache Kafka FAQ: Frequently Asked Questions Answered"
 sidebarTitle: "FAQ"
 description: "Answers to the most common Apache Kafka questions covering partitions, consumers, ordering, retention, exactly-once semantics, and cluster sizing."
 ---
@@ -369,7 +369,7 @@ Apache Kafka has a reputation for being powerful but nuanced — and that means 
     ```
 
     **JMX metrics to monitor** (expose via Prometheus JMX exporter or similar):
-    ```
+    ```text
     kafka.server:type=ReplicaManager,name=UnderReplicatedPartitions
     kafka.controller:type=KafkaController,name=OfflinePartitionsCount
     kafka.controller:type=KafkaController,name=ActiveControllerCount

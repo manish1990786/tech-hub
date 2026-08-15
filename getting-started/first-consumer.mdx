@@ -1,5 +1,5 @@
 ---
-title: "Consume Kafka Messages: Your First Consumer"
+title: "Read Your First Kafka Messages: Consumer Guide for Beginners"
 sidebarTitle: "First Consumer"
 description: "Read messages from a Kafka topic using the console consumer and Java/Python code. Learn offset management, consumer groups, and the poll loop pattern."
 ---
@@ -43,7 +43,7 @@ bin/kafka-console-consumer.sh \
 
 Example output:
 
-```
+```text
 order-1 | {"amount": 99.99, "currency": "USD"}
 order-2 | {"amount": 14.50, "currency": "EUR"}
 ```
@@ -325,7 +325,7 @@ Now that you can read messages from Kafka, explore how consumer groups work at s
   <Card title="Consumer Groups Deep Dive" icon="users" href="/guides/consumer-groups">
     Learn how Kafka distributes partitions across group members, how rebalancing works, and strategies for minimising rebalance impact in production.
   </Card>
-  <Card title="Consumer Groups Guide" icon="sliders" href="/guides/consumer-groups">
-    Practical guidance on configuring consumer groups, monitoring lag, and managing offsets across multiple topics and environments.
+  <Card title="Producer Guide" icon="paper-plane" href="/getting-started/first-producer">
+    Go beyond consuming and learn how to produce messages with Java, Python, and Node.js using real client libraries and producer configuration options.
   </Card>
 </CardGroup>

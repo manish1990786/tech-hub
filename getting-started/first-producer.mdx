@@ -1,7 +1,7 @@
 ---
 title: "Produce Your First Kafka Messages with Code Examples"
 sidebarTitle: "First Producer"
-description: "Send your first messages to a Kafka topic using the console producer and Java/Python code. Learn key-value messages, acknowledgments, and producer configuration."
+description: "Send messages to Kafka with the console producer and Java, Python, and Node.js clients. Learn key-value records, acks, and producer configuration options."
 ---
 
 A Kafka producer is any application that publishes (writes) messages to one or more Kafka topics. Every message you produce is appended to a partition in the topic's log, assigned a monotonically increasing offset, and durably stored according to the topic's retention policy. This guide shows you how to produce messages using the built-in console producer tool, then moves on to full code examples in Java, Python, and Node.js so you can start sending messages from real applications.
@@ -112,7 +112,10 @@ public class FirstProducer {
                 }
             });
 
-        } // producer.close() is called automatically here
+            // 6. Flush — block until all buffered records have been delivered
+            producer.flush();
+
+        } // 7. producer.close() is called automatically here (try-with-resources)
     }
 }
 ```
@@ -216,7 +219,7 @@ When a message is successfully written to Kafka, the broker returns metadata tha
 
 In the Java example above, the synchronous send prints something like:
 
-```
+```text
 Sent to topic=my-first-topic partition=1 offset=42
 ```
 

@@ -1,7 +1,7 @@
 ---
 title: "Kafka Streams: Build Stateful Stream Processing Apps"
 sidebarTitle: "Kafka Streams"
-description: "Learn Kafka Streams — the Java library for building real-time stream processing applications. Covers KStream, KTable, windowing, joins, and stateful aggregations."
+description: "Learn Kafka Streams, the Java library for real-time stream processing. Covers KStream, KTable, windowing, joins, and stateful aggregations."
 ---
 
 Kafka Streams is a lightweight Java library embedded directly in your application for processing data in real time. Unlike Spark Structured Streaming or Apache Flink, Kafka Streams requires no separate processing cluster — your application IS the stream processor. It reads from Kafka topics, runs your transformation logic, and writes results back to Kafka, all within ordinary JVM processes that you deploy and scale like any other microservice.
@@ -199,7 +199,7 @@ Windowing constrains aggregations to a specific time range. Kafka Streams suppor
 | **Sliding** | Windows defined by a max time difference between records | Events within 10s of each other |
 | **Session** | Variable-size windows defined by inactivity gaps | User sessions (close after 30 min of silence) |
 
-```
+```text
 Tumbling (size=5min):
   ├────5min────┤────5min────┤────5min────┤
 

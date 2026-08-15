@@ -1,7 +1,7 @@
 ---
-title: "Kafka Consumer Groups: Parallel Processing and Load Balancing"
+title: "Kafka Consumer Groups: Parallel Processing and Scaling"
 sidebarTitle: "Consumer Groups"
-description: "Learn how Kafka consumer groups enable parallel message processing. Covers group coordination, partition assignment, lag monitoring, and offset reset strategies."
+description: "Learn how Kafka consumer groups scale message consumption. Covers group coordination, partition assignment, lag monitoring, and offset reset strategies."
 ---
 
 Consumer groups are Kafka's mechanism for scaling message consumption horizontally. By organising multiple consumer instances under a single group ID, Kafka automatically distributes the partitions of a topic across the group's members so that every partition is handled by exactly one consumer at a time. This design lets you scale throughput linearly by adding more consumer instances — without any coordination logic in your application code.
@@ -10,7 +10,7 @@ Consumer groups are Kafka's mechanism for scaling message consumption horizontal
 
 A consumer group is a logical set of consumer instances that collaborate to read a topic. Each consumer in the group is assigned a non-overlapping subset of partitions. As a result, every message in a partition is processed by exactly one consumer within the group — providing a natural unit of parallel work.
 
-```
+```text
                          Topic: "orders" (6 partitions)
 ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
 │  P 0     │  │  P 1     │  │  P 2     │  │  P 3     │  │  P 4     │  │  P 5     │
@@ -40,7 +40,7 @@ Every consumer group has a designated **group coordinator** — a broker elected
 - Distributing assignments back to all members via `SyncGroup` responses
 - Tracking liveness via the heartbeat protocol
 
-```
+```text
 Consumer A                   Group Coordinator Broker
     │                                │
     │── JoinGroup ──────────────────▶│  "I want to join order-processor"
@@ -61,7 +61,7 @@ The relationship between consumer count and partition count directly determines 
 
 ### Fewer consumers than partitions
 
-```
+```text
 Topic "events" — 6 partitions
 
 1 Consumer                     3 Consumers
@@ -77,7 +77,7 @@ Adding consumers up to the partition count gives you proportionally more through
 
 ### More consumers than partitions
 
-```
+```text
 Topic "events" — 6 partitions,  7 Consumers
 
 ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌──────────┐
@@ -102,7 +102,7 @@ When you add a new consumer to a group, it sends a `JoinGroup` request to the co
 
 Different consumer groups reading the same topic each maintain their own independent committed offsets. A message produced to a partition is delivered to every consumer group — this is how Kafka implements the publish-subscribe fan-out pattern.
 
-```
+```text
 Topic: "orders"
       │
       ├──────────────────────────────┐
@@ -149,7 +149,7 @@ bin/kafka-consumer-groups.sh --reset-offsets --group order-processor \
 
 The `--describe` output looks like this:
 
-```
+```text
 GROUP            TOPIC    PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG  CONSUMER-ID         HOST
 order-processor  orders   0          5020            5025            5    consumer-1-abc123   /10.0.0.1
 order-processor  orders   1          5015            5025            10   consumer-2-def456   /10.0.0.2
@@ -162,7 +162,7 @@ The `LAG` column is the most important: it tells you how many messages each cons
 
 Consumer lag is the difference between the **log-end offset** (where the producer is writing) and the **committed offset** (where your consumer last saved its position):
 
-```
+```text
 Lag = log-end-offset − committed-offset
 ```
 

@@ -1,5 +1,5 @@
 ---
-title: "ZooKeeper vs KRaft: Kafka Metadata Management"
+title: "ZooKeeper vs KRaft: Kafka Metadata Management Guide"
 sidebarTitle: "ZooKeeper & KRaft"
 description: "Compare ZooKeeper and KRaft mode in Apache Kafka. Learn how Kafka manages cluster metadata, why KRaft was introduced, and how to choose between them."
 ---
@@ -26,7 +26,7 @@ In a ZooKeeper-mode Kafka deployment, ZooKeeper is responsible for:
 
 ZooKeeper itself is deployed as an **ensemble** — a cluster of ZooKeeper nodes that use the ZAB (ZooKeeper Atomic Broadcast) protocol for consensus. A typical ZooKeeper ensemble has 3 or 5 nodes; a majority (quorum) must be available for ZooKeeper to be operational.
 
-```
+```text
          ┌─────────────────────────────────────────────────────┐
          │                  ZooKeeper Ensemble                 │
          │                                                     │
@@ -86,7 +86,7 @@ Key improvements over ZooKeeper mode:
 
 In KRaft mode, every node has a **process role**: `broker`, `controller`, or `broker,controller` (combined).
 
-```
+```text
          ┌────────────────────────────────────────────────────────┐
          │              KRaft Controller Quorum                   │
          │                                                        │

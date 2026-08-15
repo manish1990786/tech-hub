@@ -29,7 +29,7 @@ A **partition** is a subdivision of a topic. When you create a topic, you specif
 
 Every record within a partition is assigned a unique, monotonically increasing integer called an **offset**. Offsets start at 0 for each partition and only ever increase. A record's position in Kafka is fully identified by the combination of **topic + partition + offset**.
 
-```
+```text
 Topic: "orders"  (3 partitions)
 
 Partition 0: [0]→"order-A"  [1]→"order-D"  [2]→"order-G"  [3]→"order-J"  [4]→"order-M"
@@ -119,7 +119,7 @@ When a producer sends a message, it can optionally include a **partition key**. 
 
 Kafka guarantees message ordering **within a single partition**. It does **not** guarantee ordering across partitions. This is a critical distinction.
 
-```
+```text
                     Topic: "orders" (3 partitions)
 
   Producer sends:  msg1(key=A) → Partition 0: [0]msg1  [3]msg4  [6]msg7

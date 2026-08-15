@@ -1,7 +1,7 @@
 ---
-title: "Kafka Producer Configuration Reference"
+title: "Apache Kafka Producer Configuration Reference Guide"
 sidebarTitle: "Producer Config"
-description: "Complete reference for Apache Kafka producer configuration properties. Covers serializers, acknowledgments, batching, compression, retries, and exactly-once settings."
+description: "Complete reference for Kafka producer configuration. Covers acks, retries, batching, compression, idempotence, and exactly-once delivery settings."
 ---
 
 The Kafka producer client is configured through a set of key-value properties that you pass when constructing a `KafkaProducer` instance. These properties control everything from how the producer connects to the cluster, to how it serializes your data, to how aggressively it batches records before sending them. Choosing the right values lets you trade off between throughput, latency, and delivery guarantees to match your application's needs.

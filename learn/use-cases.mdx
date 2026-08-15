@@ -1,7 +1,7 @@
 ---
 title: "Apache Kafka Use Cases and Real-World Applications"
 sidebarTitle: "Use Cases"
-description: "Explore real-world Apache Kafka use cases including event sourcing, log aggregation, real-time analytics, microservices messaging, and data pipeline integration."
+description: "Explore Apache Kafka use cases including event sourcing, log aggregation, real-time analytics, microservices messaging, and data pipeline integration."
 ---
 
 Apache Kafka was built to solve a specific class of problem: moving large volumes of data between systems reliably, in real time, without tightly coupling producers and consumers. Over the more than a decade since its open-source release, that core capability has been applied to an enormous range of real-world challenges — from powering fraud detection systems that evaluate millions of transactions per second, to synchronizing microservices across global infrastructure, to giving data teams access to fresh data in minutes rather than hours. This page walks through the most important and widely deployed Kafka use cases, explains what problem each one solves, and shows you how Kafka's architecture maps onto each pattern.
@@ -41,7 +41,7 @@ Kafka acts as the real-time transport layer between your operational systems and
 
 ### Architecture
 
-```
+```text
 Application Servers
         │
         ▼
@@ -74,7 +74,7 @@ In an event-sourced architecture, your Kafka topic is the system of record — n
 
 ### Architecture
 
-```
+```text
 Command Handler
       │
       ▼  (write domain events)
@@ -109,7 +109,7 @@ Kafka serves as a high-throughput, durable buffer between log producers (your ap
 
 ### Architecture
 
-```
+```text
 Service A ─── Filebeat ──┐
 Service B ─── Filebeat ──┼──► Kafka Topic: app-logs ──► Logstash ──► Elasticsearch
 Service C ─── Filebeat ──┘                          │
@@ -134,7 +134,7 @@ Kafka acts as an asynchronous event bus between your services. Service A publish
 
 ### Architecture
 
-```
+```text
 Order Service ──► Kafka: order-placed ──┬──► Inventory Service
                                         ├──► Notification Service
                                         ├──► Fraud Detection Service
@@ -163,7 +163,7 @@ Change Data Capture (CDC) with Kafka Connect reads your database's replication l
 
 ### Architecture
 
-```
+```text
 PostgreSQL (WAL)
       │
       ▼
@@ -196,7 +196,7 @@ Kafka Streams and ksqlDB provide a rich set of stream processing primitives that
 
 ### Architecture
 
-```
+```text
 Kafka: raw-clicks (high volume, unfiltered)
         │
         ▼
