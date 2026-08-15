@@ -26,25 +26,25 @@ In a ZooKeeper-mode Kafka deployment, ZooKeeper is responsible for:
 
 ZooKeeper itself is deployed as an **ensemble** — a cluster of ZooKeeper nodes that use the ZAB (ZooKeeper Atomic Broadcast) protocol for consensus. A typical ZooKeeper ensemble has 3 or 5 nodes; a majority (quorum) must be available for ZooKeeper to be operational.
 
-```text
-         ┌─────────────────────────────────────────────────────┐
-         │                  ZooKeeper Ensemble                 │
-         │                                                     │
-         │   ┌──────────┐   ┌──────────┐   ┌──────────┐       │
-         │   │  ZK Node │   │  ZK Node │   │  ZK Node │       │
-         │   │  (Leader)│◄──│(Follower)│   │(Follower)│       │
-         │   └────┬─────┘   └──────────┘   └──────────┘       │
-         └────────┼────────────────────────────────────────────┘
-                  │  metadata reads/writes (znodes)
-          ┌───────┼────────────────────────────────┐
-          │       ▼                                │
-          │  ┌──────────┐  ┌──────────┐  ┌──────────┐
-          │  │ Broker 1 │  │ Broker 2 │  │ Broker 3 │
-          │  │(Controller│  │          │  │          │
-          │  │  elected) │  │          │  │          │
-          │  └──────────┘  └──────────┘  └──────────┘
-          │                Kafka Cluster                │
-          └─────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph ZK["ZooKeeper Ensemble"]
+        direction LR
+        ZKL["ZK Node (Leader)"]
+        ZKF1["ZK Node (Follower)"]
+        ZKF2["ZK Node (Follower)"]
+        ZKF1 --> ZKL
+        ZKF2 --> ZKL
+    end
+
+    subgraph Kafka["Kafka Cluster"]
+        direction LR
+        B1["Broker 1<br/>(Controller elected)"]
+        B2["Broker 2"]
+        B3["Broker 3"]
+    end
+
+    ZK <-->|"metadata reads/writes (znodes)"| Kafka
 ```
 
 Kafka brokers connect to ZooKeeper at startup and maintain a persistent session. Producers and consumers connect only to Kafka brokers — they never talk to ZooKeeper directly (in modern client versions).
@@ -86,34 +86,37 @@ Key improvements over ZooKeeper mode:
 
 In KRaft mode, every node has a **process role**: `broker`, `controller`, or `broker,controller` (combined).
 
-```text
-         ┌────────────────────────────────────────────────────────┐
-         │              KRaft Controller Quorum                   │
-         │                                                        │
-         │  ┌────────────────┐  ┌──────────────┐  ┌───────────┐  │
-         │  │  Controller 1  │  │ Controller 2 │  │Controller3│  │
-         │  │ (Active Leader)│◄─│  (Follower)  │  │(Follower) │  │
-         │  └───────┬────────┘  └──────────────┘  └───────────┘  │
-         └──────────┼─────────────────────────────────────────────┘
-                    │  metadata replication via __cluster_metadata topic
-          ┌─────────┼──────────────────────────────────────┐
-          │         ▼                                      │
-          │  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
-          │  │ Broker 1 │  │ Broker 2 │  │ Broker 3 │     │
-          │  └──────────┘  └──────────┘  └──────────┘     │
-          │            Kafka Broker Cluster                │
-          └─────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Quorum["KRaft Controller Quorum"]
+        direction LR
+        C1["Controller 1<br/>(Active Leader)"]
+        C2["Controller 2<br/>(Follower)"]
+        C3["Controller 3<br/>(Follower)"]
+        C2 --> C1
+        C3 --> C1
+    end
 
-  Note: For smaller clusters, brokers and controllers can run on the same nodes
-        using the combined "broker,controller" process.role setting.
+    subgraph Brokers["Kafka Broker Cluster"]
+        direction LR
+        B1["Broker 1"]
+        B2["Broker 2"]
+        B3["Broker 3"]
+    end
+
+    Quorum -->|"metadata replication via __cluster_metadata topic"| Brokers
 ```
+
+<Note>
+  For smaller clusters, brokers and controllers can run on the same nodes using the combined `broker,controller` `process.role` setting.
+</Note>
 
 A controller quorum of **3 nodes** tolerates 1 failure; a quorum of **5 nodes** tolerates 2 failures. For production, a dedicated quorum of 3 controllers (separate from your broker nodes) is the recommended topology.
 
 ## KRaft vs ZooKeeper: Feature Comparison
 
 | Feature | ZooKeeper Mode | KRaft Mode |
-|---|---|---|
+| --- | --- | --- |
 | **Available Since** | Kafka 0.x (original) | Kafka 2.8 (preview), 3.3 (production-ready) |
 | **Metadata Store** | Apache ZooKeeper (external) | `__cluster_metadata` Kafka topic (internal) |
 | **Max Partitions (tested)** | ~200,000 per cluster | Millions per cluster |
@@ -142,23 +145,23 @@ To run a broker in KRaft mode, you need to make a few changes to `server.propert
     ```properties title="server.properties — KRaft broker+controller (single-node or small cluster)"
     # The unique broker/node ID (must be unique per node)
     node.id=1
-
+    
     # This node acts as both a broker and a controller
     process.roles=broker,controller
-
+    
     # The controller quorum — list all controller nodes (nodeId@host:port)
     controller.quorum.voters=1@localhost:9093,2@localhost:9093,3@localhost:9093
-
+    
     # Listeners for broker traffic and controller traffic
     listeners=PLAINTEXT://localhost:9092,CONTROLLER://localhost:9093
     advertised.listeners=PLAINTEXT://localhost:9092
-
+    
     # Map listener names to security protocols
     listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-
+    
     # The listener used for inter-controller communication
     controller.listener.names=CONTROLLER
-
+    
     # Where to store the log data
     log.dirs=/var/kafka/data
     ```

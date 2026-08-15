@@ -10,18 +10,29 @@ Consumer groups are Kafka's mechanism for scaling message consumption horizontal
 
 A consumer group is a logical set of consumer instances that collaborate to read a topic. Each consumer in the group is assigned a non-overlapping subset of partitions. As a result, every message in a partition is processed by exactly one consumer within the group — providing a natural unit of parallel work.
 
-```text
-                         Topic: "orders" (6 partitions)
-┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
-│  P 0     │  │  P 1     │  │  P 2     │  │  P 3     │  │  P 4     │  │  P 5     │
-└────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘
-     │              │              │              │              │              │
-     ▼              ▼              ▼              ▼              ▼              ▼
-┌─────────────────────────┐  ┌─────────────────────────┐  ┌─────────────────────────┐
-│    Consumer A           │  │    Consumer B           │  │    Consumer C           │
-│  (P0, P1)               │  │  (P2, P3)               │  │  (P4, P5)               │
-└─────────────────────────┘  └─────────────────────────┘  └─────────────────────────┘
-                     Consumer Group: "order-processor"
+```mermaid
+flowchart TB
+    subgraph Topic["Topic: orders (6 partitions)"]
+        direction LR
+        P0["P0"]
+        P1["P1"]
+        P2["P2"]
+        P3["P3"]
+        P4["P4"]
+        P5["P5"]
+    end
+    subgraph Group["Consumer Group: order-processor"]
+        direction LR
+        CA["Consumer A"]
+        CB["Consumer B"]
+        CC["Consumer C"]
+    end
+    P0 --> CA
+    P1 --> CA
+    P2 --> CB
+    P3 --> CB
+    P4 --> CC
+    P5 --> CC
 ```
 
 Key rules of consumer groups:
@@ -40,17 +51,18 @@ Every consumer group has a designated **group coordinator** — a broker elected
 - Distributing assignments back to all members via `SyncGroup` responses
 - Tracking liveness via the heartbeat protocol
 
-```text
-Consumer A                   Group Coordinator Broker
-    │                                │
-    │── JoinGroup ──────────────────▶│  "I want to join order-processor"
-    │◀─ JoinGroup Response ──────────│  "You are the leader; here are the members"
-    │                                │
-    │── SyncGroup (with assignment) ─▶│  Leader sends the full partition assignment
-    │◀─ SyncGroup Response ──────────│  "Your assignment: P0, P1"
-    │                                │
-    │── Heartbeat (every 3s) ────────▶│  "I am alive"
-    │◀─ Heartbeat Response ───────────│  "OK" (or "REBALANCE_IN_PROGRESS")
+```mermaid
+sequenceDiagram
+    participant C as Consumer A
+    participant GC as Group Coordinator Broker
+    C->>GC: JoinGroup ("I want to join order-processor")
+    GC-->>C: JoinGroup Response ("You are the leader; here are the members")
+    C->>GC: SyncGroup (with full partition assignment)
+    GC-->>C: SyncGroup Response ("Your assignment: P0, P1")
+    loop every 3s
+        C->>GC: Heartbeat ("I am alive")
+        GC-->>C: Heartbeat Response ("OK" or "REBALANCE_IN_PROGRESS")
+    end
 ```
 
 The `session.timeout.ms` setting (default 45 s) is the maximum time the coordinator will wait for a heartbeat before declaring the consumer dead. The `heartbeat.interval.ms` setting (default 3 s) controls how frequently the consumer sends heartbeats — it should be roughly one-third of `session.timeout.ms`.
@@ -61,33 +73,35 @@ The relationship between consumer count and partition count directly determines 
 
 ### Fewer consumers than partitions
 
-```text
-Topic "events" — 6 partitions
-
-1 Consumer                     3 Consumers
-┌────────────────┐             ┌──────┐  ┌──────┐  ┌──────┐
-│  Consumer A    │             │  A   │  │  B   │  │  C   │
-│ P0 P1 P2       │             │P0 P1 │  │P2 P3 │  │P4 P5 │
-│ P3 P4 P5       │             └──────┘  └──────┘  └──────┘
-└────────────────┘
-All work on one instance      Work spread across 3 instances
+```mermaid
+flowchart LR
+    subgraph One["1 Consumer (all work on one instance)"]
+        A1["Consumer A<br/>P0, P1, P2, P3, P4, P5"]
+    end
+    subgraph Three["3 Consumers (work spread across 3 instances)"]
+        direction LR
+        A2["Consumer A<br/>P0, P1"]
+        B2["Consumer B<br/>P2, P3"]
+        C2["Consumer C<br/>P4, P5"]
+    end
 ```
 
 Adding consumers up to the partition count gives you proportionally more throughput.
 
 ### More consumers than partitions
 
-```text
-Topic "events" — 6 partitions,  7 Consumers
-
-┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌──────────┐
-│ A │ │ B │ │ C │ │ D │ │ E │ │ F │ │    G     │
-│P0 │ │P1 │ │P2 │ │P3 │ │P4 │ │P5 │ │  (idle)  │
-└───┘ └───┘ └───┘ └───┘ └───┘ └───┘ └──────────┘
-                                        ▲
-                              No partition to assign!
-                              G is a hot standby — it will
-                              take over if any other consumer fails.
+```mermaid
+flowchart LR
+    subgraph Group["Topic events (6 partitions), 7 Consumers"]
+        direction LR
+        A["A<br/>P0"]
+        B["B<br/>P1"]
+        C["C<br/>P2"]
+        D["D<br/>P3"]
+        E["E<br/>P4"]
+        F["F<br/>P5"]
+        G["G<br/>(idle hot standby)"]
+    end
 ```
 
 <Note>
@@ -102,17 +116,11 @@ When you add a new consumer to a group, it sends a `JoinGroup` request to the co
 
 Different consumer groups reading the same topic each maintain their own independent committed offsets. A message produced to a partition is delivered to every consumer group — this is how Kafka implements the publish-subscribe fan-out pattern.
 
-```text
-Topic: "orders"
-      │
-      ├──────────────────────────────┐
-      │                              │
-      ▼                              ▼
-Consumer Group A               Consumer Group B
-"order-processor"              "order-audit-logger"
-  offset: 5000                   offset: 4800
-
-Processes orders in real-time   Writes all orders to data warehouse
+```mermaid
+flowchart LR
+    T["Topic: orders"]
+    T --> GA["Consumer Group A<br/>order-processor<br/>offset: 5000<br/>Processes orders in real-time"]
+    T --> GB["Consumer Group B<br/>order-audit-logger<br/>offset: 4800<br/>Writes all orders to data warehouse"]
 ```
 
 This means you can safely add a new consumer group (for analytics, auditing, or a new microservice) without affecting existing consumers — each group reads the topic independently from its own committed position.
@@ -122,6 +130,7 @@ This means you can safely add a new consumer group (for analytics, auditing, or 
 Kafka ships with `kafka-consumer-groups.sh` for inspecting and managing groups from the command line.
 
 <CodeGroup>
+
 ```bash List all consumer groups
 # List all consumer groups
 bin/kafka-consumer-groups.sh --list --bootstrap-server localhost:9092
@@ -145,6 +154,7 @@ bin/kafka-consumer-groups.sh --reset-offsets --group order-processor \
   --topic orders --to-datetime 2024-01-01T00:00:00.000 --execute \
   --bootstrap-server localhost:9092
 ```
+
 </CodeGroup>
 
 The `--describe` output looks like this:
@@ -174,9 +184,11 @@ Lag greater than zero is normal for a consumer that is catching up after a resta
   <Card title="kafka-consumer-groups.sh" icon="terminal">
     Built-in CLI tool. Use `--describe` to inspect lag per partition in real time. Best for one-off debugging.
   </Card>
+
   <Card title="Kafka UI / AKHQ" icon="chart-bar">
     Open-source web UIs that visualise consumer group lag, topic throughput, and offset history in a browser dashboard.
   </Card>
+
   <Card title="Prometheus + Grafana" icon="chart-line">
     Export lag metrics via the JMX Exporter or Kafka Exporter and build time-series dashboards with alerting on lag thresholds.
   </Card>
@@ -187,7 +199,7 @@ Lag greater than zero is normal for a consumer that is catching up after a resta
 When a consumer group has no committed offset for a partition (e.g. on first start) or when you deliberately reset offsets via the CLI, Kafka applies the reset strategy defined by `auto.offset.reset` — or the flag you pass to `kafka-consumer-groups.sh`.
 
 | Strategy | CLI Flag | `auto.offset.reset` Value | Behaviour |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Earliest | `--to-earliest` | `earliest` | Jump to the very first available offset in the partition |
 | Latest | `--to-latest` | `latest` | Jump to the end — only consume new messages going forward |
 | Specific offset | `--to-offset <n>` | N/A (CLI only) | Jump to an exact numeric offset |

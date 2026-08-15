@@ -10,20 +10,11 @@ A Kafka **consumer** is a client application that subscribes to one or more topi
 
 The core pattern of every Kafka consumer is the **poll loop**. Your consumer calls `poll()` repeatedly in a loop, processes the returned batch of records, and then commits its progress. This loop continues until you stop the application.
 
-```text
-┌──────────────────────────────────────────────────────────┐
-│                      Consumer Poll Loop                  │
-│                                                          │
-│   subscribe(topics)                                      │
-│         │                                                │
-│         ▼                                                │
-│   ┌─────────────┐   records available                    │
-│   │   poll()    │ ─────────────────────► process records │
-│   └─────────────┘                              │         │
-│         ▲                                      │         │
-│         │          commit offsets ◄────────────┘         │
-│         └──────────────────────────────────────          │
-└──────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    A["subscribe(topics)"] --> B["poll()"]
+    B -->|records available| C["process records"]
+    C -->|commit offsets| B
 ```
 
 The `poll(Duration timeout)` call does several things at once: it fetches new records from the broker, sends heartbeats to the group coordinator (keeping the consumer alive in its group), and triggers partition rebalance handling. The `timeout` parameter is how long `poll()` will block waiting for records if none are immediately available — it is not a processing deadline.
@@ -41,14 +32,17 @@ Every record in a Kafka partition has a unique, monotonically increasing integer
 
 Committed offsets are stored in a special internal Kafka topic called **`__consumer_offsets`**. This topic is managed automatically by Kafka and is replicated like any other topic for durability.
 
-```text
-Partition 0:  [0]  [1]  [2]  [3]  [4]  [5]  [6]  [7]  [8]  ...
-                              ↑              ↑
-                    Committed Offset=3   Current Offset=6
-                    (last saved progress) (next to be returned by poll)
+```mermaid
+flowchart LR
+    subgraph P0["Partition 0"]
+        direction LR
+        R0["0"] --- R1["1"] --- R2["2"] --- R3["3"] --- R4["4"] --- R5["5"] --- R6["6"] --- R7["7"] --- R8["8"]
+    end
+    C["Committed Offset = 3<br/>(last saved progress)"] -.-> R3
+    N["Current Offset = 6<br/>(next to be returned by poll)"] -.-> R6
 ```
 
-If the consumer crashes between offset 3 and offset 6, it will restart from offset 4 (the committed offset + 1) and re-process records 4 and 5. This is **at-least-once delivery** — messages may be processed more than once if the consumer crashes before committing.
+If the consumer crashes between offset 3 and offset 6, it will restart from offset 4 (the committed offset \+ 1) and re-process records 4 and 5. This is **at-least-once delivery** — messages may be processed more than once if the consumer crashes before committing.
 
 ## Auto Commit vs Manual Commit
 
@@ -60,7 +54,7 @@ Kafka gives you two approaches to managing offset commits: automatic and manual.
 
     **Pros:** Zero boilerplate — you don't write any commit code.
 
-    **Cons:** The consumer commits the *last polled* offset, not necessarily the last *successfully processed* offset. If your application crashes after `poll()` returns records but before it processes them, those records will be skipped on restart because their offsets were already committed.
+    **Cons:** The consumer commits the _last polled_ offset, not necessarily the last _successfully processed_ offset. If your application crashes after `poll()` returns records but before it processes them, those records will be skipped on restart because their offsets were already committed.
 
     ```properties title="Auto-commit configuration"
     enable.auto.commit=true
@@ -127,7 +121,7 @@ This design enables horizontal scaling: if a topic has 6 partitions and your con
 When consumers join a group, Kafka's **group coordinator** broker distributes the partitions among them. The assignment strategy is controlled by the `partition.assignment.strategy` configuration:
 
 | Strategy | Behavior |
-|---|---|
+| --- | --- |
 | `RangeAssignor` (default) | Assigns contiguous partition ranges to each consumer. Can be uneven if partitions don't divide evenly. |
 | `RoundRobinAssignor` | Distributes partitions evenly in round-robin order. More balanced than Range. |
 | `StickyAssignor` | Minimizes partition movement during rebalances by keeping existing assignments where possible. |
@@ -140,7 +134,7 @@ A **rebalance** is triggered whenever the group membership changes — a consume
 When a consumer group starts reading a topic for the first time (no committed offsets exist), or when it requests an offset that no longer exists in the log (it's been deleted by retention), Kafka uses the `auto.offset.reset` policy to decide where to start:
 
 | Value | Behavior |
-|---|---|
+| --- | --- |
 | `latest` (default) | Start reading from the end of the log — only new messages published after the consumer started are consumed. |
 | `earliest` | Start reading from the beginning of the log — consume all retained historical messages first. |
 | `none` | Throw an exception if no committed offset exists for the consumer group. Use this when you want to enforce that consumers always have a prior commit. |

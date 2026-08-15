@@ -10,18 +10,23 @@ Apache Kafka was built to solve a specific class of problem: moving large volume
   <Card title="Real-Time Analytics" icon="chart-line">
     Stream fresh data directly into analytics dashboards, alerting systems, and ML feature stores — no more overnight batch jobs.
   </Card>
+
   <Card title="Event Sourcing" icon="timeline">
     Store every state change as an immutable event log and derive current state by replaying it — giving you a full audit trail and time-travel debugging.
   </Card>
+
   <Card title="Log Aggregation" icon="layer-group">
     Centralize logs and operational events from hundreds of services into a single, queryable stream for monitoring and alerting.
   </Card>
+
   <Card title="Microservices Messaging" icon="network-wired">
     Decouple your microservices with an event bus that lets each service evolve independently without synchronous dependencies.
   </Card>
+
   <Card title="Change Data Capture" icon="database">
     Stream every row-level change from your database to downstream consumers the moment it happens — replicate, sync, and react in real time.
   </Card>
+
   <Card title="Stream Processing" icon="wave-sine">
     Transform, aggregate, enrich, and join streams of events as they flow through your system using Kafka Streams or ksqlDB.
   </Card>
@@ -41,19 +46,13 @@ Kafka acts as the real-time transport layer between your operational systems and
 
 ### Architecture
 
-```text
-Application Servers
-        │
-        ▼
-  Kafka Topic: events
-        │
-   ┌────┴─────┐
-   ▼          ▼
-ClickHouse   Flink / Kafka Streams
-(OLAP)       (Aggregation & Enrichment)
-   │                │
-   ▼                ▼
-Dashboard       Alert Engine
+```mermaid
+flowchart TD
+    App["Application Servers"] --> Topic["Kafka Topic: events"]
+    Topic --> CH["ClickHouse<br/>(OLAP)"]
+    Topic --> Flink["Flink / Kafka Streams<br/>(Aggregation & Enrichment)"]
+    CH --> Dash["Dashboard"]
+    Flink --> Alert["Alert Engine"]
 ```
 
 ### Real-World Example
@@ -66,7 +65,7 @@ Dashboard       Alert Engine
 
 ### The Problem
 
-In traditional application architecture, a database stores the *current state* of an entity — a user's account balance, an order's status, an inventory count. When state changes, the old value is overwritten. This makes it impossible to answer questions like "what was this entity's state at a specific point in the past?" or "exactly what sequence of changes led to this state?" Debugging production issues and auditing state transitions become guesswork.
+In traditional application architecture, a database stores the _current state_ of an entity — a user's account balance, an order's status, an inventory count. When state changes, the old value is overwritten. This makes it impossible to answer questions like "what was this entity's state at a specific point in the past?" or "exactly what sequence of changes led to this state?" Debugging production issues and auditing state transitions become guesswork.
 
 ### How Kafka Solves It
 
@@ -74,17 +73,11 @@ In an event-sourced architecture, your Kafka topic is the system of record — n
 
 ### Architecture
 
-```text
-Command Handler
-      │
-      ▼  (write domain events)
-Kafka Topic: account-events
-      │
-  ┌───┴───┐
-  ▼       ▼
-Projection  Audit Log
-(current    (immutable
- state DB)   history)
+```mermaid
+flowchart TD
+    CH["Command Handler"] -->|"write domain events"| Topic["Kafka Topic: account-events"]
+    Topic --> Proj["Projection<br/>(current state DB)"]
+    Topic --> Audit["Audit Log<br/>(immutable history)"]
 ```
 
 ### Real-World Example
@@ -109,11 +102,16 @@ Kafka serves as a high-throughput, durable buffer between log producers (your ap
 
 ### Architecture
 
-```text
-Service A ─── Filebeat ──┐
-Service B ─── Filebeat ──┼──► Kafka Topic: app-logs ──► Logstash ──► Elasticsearch
-Service C ─── Filebeat ──┘                          │
-                                                    └──► S3 (archival)
+```mermaid
+flowchart LR
+    SA["Service A"] --> FA["Filebeat"]
+    SB["Service B"] --> FB["Filebeat"]
+    SC["Service C"] --> FC["Filebeat"]
+    FA --> Topic["Kafka Topic: app-logs"]
+    FB --> Topic
+    FC --> Topic
+    Topic --> LS["Logstash"] --> ES["Elasticsearch"]
+    Topic --> S3["S3 (archival)"]
 ```
 
 ### Real-World Example
@@ -134,11 +132,13 @@ Kafka acts as an asynchronous event bus between your services. Service A publish
 
 ### Architecture
 
-```text
-Order Service ──► Kafka: order-placed ──┬──► Inventory Service
-                                        ├──► Notification Service
-                                        ├──► Fraud Detection Service
-                                        └──► Analytics Service
+```mermaid
+flowchart LR
+    OS["Order Service"] --> Topic["Kafka: order-placed"]
+    Topic --> Inv["Inventory Service"]
+    Topic --> Notif["Notification Service"]
+    Topic --> Fraud["Fraud Detection Service"]
+    Topic --> Ana["Analytics Service"]
 ```
 
 ### Real-World Example
@@ -163,19 +163,12 @@ Change Data Capture (CDC) with Kafka Connect reads your database's replication l
 
 ### Architecture
 
-```text
-PostgreSQL (WAL)
-      │
-      ▼
-Debezium Connector (Kafka Connect)
-      │
-      ▼
-Kafka Topic: postgres.public.orders
-      │
-  ┌───┴────────────┐
-  ▼                ▼
-Elasticsearch    Data Warehouse
-(search index)   (Snowflake / BigQuery)
+```mermaid
+flowchart TD
+    PG["PostgreSQL (WAL)"] --> Deb["Debezium Connector<br/>(Kafka Connect)"]
+    Deb --> Topic["Kafka Topic: postgres.public.orders"]
+    Topic --> ES["Elasticsearch<br/>(search index)"]
+    Topic --> DW["Data Warehouse<br/>(Snowflake / BigQuery)"]
 ```
 
 ### Real-World Example
@@ -196,20 +189,11 @@ Kafka Streams and ksqlDB provide a rich set of stream processing primitives that
 
 ### Architecture
 
-```text
-Kafka: raw-clicks (high volume, unfiltered)
-        │
-        ▼
-  Kafka Streams Application
-  ├── filter: remove bot traffic
-  ├── enrich: join with user-profile table
-  └── aggregate: count clicks per product per 5-minute window
-        │
-        ▼
-Kafka: enriched-click-aggregates
-        │
-        ▼
-    Dashboard / Alert Engine
+```mermaid
+flowchart TD
+    Raw["Kafka: raw-clicks<br/>(high volume, unfiltered)"] --> KS["Kafka Streams Application<br/>• filter: remove bot traffic<br/>• enrich: join with user-profile table<br/>• aggregate: count clicks per product per 5-min window"]
+    KS --> Enr["Kafka: enriched-click-aggregates"]
+    Enr --> Dash["Dashboard / Alert Engine"]
 ```
 
 ### Real-World Example
@@ -223,32 +207,35 @@ Kafka: enriched-click-aggregates
 Use this checklist to evaluate whether Kafka is the right fit for what you're building. The more boxes you check, the stronger the case for Kafka.
 
 <Accordion title="Checklist: Is Kafka Right for Your Use Case?">
+  **Data volume and velocity**
 
-**Data volume and velocity**
-- [ ] You expect sustained throughput of thousands to millions of events per second
-- [ ] Your data volume will grow significantly over the next 12–24 months
-- [ ] You need to handle bursty traffic without dropping events
+  - [ ] You expect sustained throughput of thousands to millions of events per second
+  - [ ] Your data volume will grow significantly over the next 12–24 months
+  - [ ] You need to handle bursty traffic without dropping events
 
-**Consumer patterns**
-- [ ] Multiple independent systems need to consume the same stream of events
-- [ ] Different consumers need to process events at different speeds
-- [ ] You need to add new consumers in the future without modifying producers
+  **Consumer patterns**
 
-**Durability and replay**
-- [ ] You need events to survive consumer failures and be re-processable
-- [ ] You want an audit trail of everything that happened in a domain
-- [ ] You may need to backfill a new system with historical data
+  - [ ] Multiple independent systems need to consume the same stream of events
+  - [ ] Different consumers need to process events at different speeds
+  - [ ] You need to add new consumers in the future without modifying producers
 
-**Decoupling**
-- [ ] You want producers and consumers to deploy and scale independently
-- [ ] You want to avoid synchronous dependencies between services
-- [ ] You expect the set of downstream consumers to change over time
+  **Durability and replay**
 
-**Operational fit**
-- [ ] Your team has (or is willing to build) expertise in distributed systems operations
-- [ ] You can commit to the infrastructure investment of running a Kafka cluster (or using a managed service)
-- [ ] Eventual consistency is an acceptable trade-off for the decoupling benefits
+  - [ ] You need events to survive consumer failures and be re-processable
+  - [ ] You want an audit trail of everything that happened in a domain
+  - [ ] You may need to backfill a new system with historical data
 
+  **Decoupling**
+
+  - [ ] You want producers and consumers to deploy and scale independently
+  - [ ] You want to avoid synchronous dependencies between services
+  - [ ] You expect the set of downstream consumers to change over time
+
+  **Operational fit**
+
+  - [ ] Your team has (or is willing to build) expertise in distributed systems operations
+  - [ ] You can commit to the infrastructure investment of running a Kafka cluster (or using a managed service)
+  - [ ] Eventual consistency is an acceptable trade-off for the decoupling benefits
 </Accordion>
 
 <Tip>

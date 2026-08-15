@@ -14,9 +14,11 @@ Every `KafkaConsumer` instance is composed of several collaborating components t
   <Accordion title="Fetcher">
     The `Fetcher` is responsible for building `FetchRequest` messages and parsing the `FetchResponse` objects returned by brokers. It maintains a queue of pre-fetched `ConsumerRecords` to hand back from `poll()`. The amount of data it fetches in one go is controlled by `fetch.min.bytes`, `fetch.max.wait.ms`, and `max.partition.fetch.bytes`.
   </Accordion>
+
   <Accordion title="ConsumerCoordinator">
     The `ConsumerCoordinator` manages the consumer's membership in a consumer group. It communicates with the group coordinator broker to join the group, receive a partition assignment, send periodic heartbeats, and participate in rebalances. It also handles offset commits by writing to the `__consumer_offsets` internal topic.
   </Accordion>
+
   <Accordion title="HeartbeatThread">
     The `HeartbeatThread` runs in the background and sends `HeartbeatRequest` messages to the group coordinator at the interval specified by `heartbeat.interval.ms` (default 3 s). If the broker does not receive a heartbeat within `session.timeout.ms` (default 45 s), it considers the consumer dead and triggers a rebalance. This thread is separate from your application thread so that a slow `poll()` processing loop does not silently cause the consumer to drop out of the group — instead `max.poll.interval.ms` (default 5 min) handles that.
   </Accordion>
@@ -31,21 +33,22 @@ Every `KafkaConsumer` instance is composed of several collaborating components t
 Kafka tracks progress through a topic using numeric offsets. There are three distinct offsets you need to reason about for each partition.
 
 | Offset | Description |
-|---|---|
+| --- | --- |
 | **Current offset** | The offset of the next record `poll()` will return. Advanced automatically as you consume. |
 | **Committed offset** | The last offset your application explicitly saved to `__consumer_offsets`. Survives restarts. |
 | **Log-end offset (LEO)** | The offset of the next record the **producer** will write. Set by the broker. |
 | **Consumer lag** | `log-end-offset − committed-offset`. How far behind your consumer is. |
 
-```text
-Partition 0
-─────────────────────────────────────────────────────▶
- 0   1   2   3   4   5   6   7   8   9  10  11  12
-                 ▲               ▲               ▲
-          committed          current            LEO
-          offset=3           offset=7        offset=12
-
-Consumer lag = 12 − 3 = 9  (5 uncommitted + 4 unfetched)
+```mermaid
+flowchart LR
+    subgraph P0["Partition 0"]
+        direction LR
+        R0["0"] --- R1["1"] --- R2["2"] --- R3["3"] --- R4["4"] --- R5["5"] --- R6["6"] --- R7["7"] --- R8["8"] --- R9["9"] --- R10["10"] --- R11["11"] --- R12["12"]
+    end
+    C["Committed offset = 3"] -.-> R3
+    Cur["Current offset = 7"] -.-> R7
+    LEO["LEO = 12"] -.-> R12
+    Lag["Consumer lag = 12 − 3 = 9<br/>(5 uncommitted + 4 unfetched)"]
 ```
 
 ## Commit Strategies
@@ -75,7 +78,7 @@ props.put(ConsumerConfig.AUTO_COMMIT_INTERVAL_MS_CONFIG, 5000);
     props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
     KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
     consumer.subscribe(List.of("orders"));
-
+    
     while (true) {
         ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
         for (ConsumerRecord<String, String> record : records) {
@@ -170,7 +173,7 @@ During a **stop-the-world** rebalance (the default behaviour before Kafka 2.4), 
 You configure the strategy with `partition.assignment.strategy`:
 
 | Strategy | Description | Rebalance Type |
-|---|---|---|
+| --- | --- | --- |
 | `RangeAssignor` | Assigns consecutive partitions per topic; default pre-2.4 | Stop-the-world |
 | `RoundRobinAssignor` | Distributes partitions evenly in round-robin order | Stop-the-world |
 | `StickyAssignor` | Minimises partition movement on rebalance while keeping balance | Stop-the-world |
@@ -325,7 +328,7 @@ Paused partitions still count toward the consumer's group membership and heartbe
 These JMX metrics are the most useful for monitoring consumer health and diagnosing lag.
 
 | Metric | MBean Attribute | What It Tells You |
-|---|---|---|
+| --- | --- | --- |
 | `records-consumed-rate` | `kafka.consumer:type=consumer-fetch-manager-metrics` | Records consumed per second; your processing throughput |
 | `fetch-latency-avg` | `kafka.consumer:type=consumer-fetch-manager-metrics` | Average time (ms) to complete a fetch request |
 | `records-lag-max` | `kafka.consumer:type=consumer-fetch-manager-metrics` | Maximum lag across all assigned partitions; key SLA metric |

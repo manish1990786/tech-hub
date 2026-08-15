@@ -14,12 +14,15 @@ Before writing code, it helps to understand the four core abstractions Kafka Str
   <Accordion title="KStream — an unbounded stream of records">
     A `KStream` represents a continuous, append-only stream of key-value records. Every record is an independent event. Think of it like an infinite log where each entry stands alone — reading the stream again would give you every event ever produced. This maps directly to reading a Kafka topic as a stream of individual messages.
   </Accordion>
+
   <Accordion title="KTable — a changelog stream (materialized view)">
     A `KTable` represents the latest value for each key — a table whose rows are continuously updated as new records arrive. Each new record for a key overwrites the previous value for that key. Internally, `KTable` is backed by a Kafka topic (the changelog) and a local state store (RocksDB by default).
   </Accordion>
+
   <Accordion title="GlobalKTable — a fully replicated table">
     A `GlobalKTable` is similar to a `KTable` but its data is replicated to **every** application instance rather than partitioned across instances. This makes it ideal for small reference data (user profiles, product catalogue) that you want to join with a `KStream` without needing co-partitioning.
   </Accordion>
+
   <Accordion title="Topology — the processing graph">
     A topology is the directed acyclic graph (DAG) of source nodes, processor nodes, and sink nodes that defines your data pipeline. You build it using the `StreamsBuilder` DSL or the lower-level `Topology` API. When `KafkaStreams` starts, it parallelises the topology across available stream threads and partitions.
   </Accordion>
@@ -103,7 +106,7 @@ public class WordCountApp {
 `KStream` provides a rich set of stateless transformation operators that map directly to functional programming concepts.
 
 | Operation | Description | Example |
-|---|---|---|
+| --- | --- | --- |
 | `filter` | Keep records matching a predicate | Remove null values |
 | `map` | Transform each record into a new key-value pair | Enrich with metadata |
 | `mapValues` | Transform only the value, keep the key | Parse JSON string → object |
@@ -193,24 +196,31 @@ KTable<String, Order> maxOrder = orders
 Windowing constrains aggregations to a specific time range. Kafka Streams supports four window types:
 
 | Window Type | Description | Use Case |
-|---|---|---|
+| --- | --- | --- |
 | **Tumbling** | Fixed-size, non-overlapping windows | Metrics per minute: `[0–60s]`, `[60–120s]`, … |
 | **Hopping** | Fixed-size windows that overlap | Rolling 5-min window advancing every 1 min |
 | **Sliding** | Windows defined by a max time difference between records | Events within 10s of each other |
 | **Session** | Variable-size windows defined by inactivity gaps | User sessions (close after 30 min of silence) |
 
-```text
-Tumbling (size=5min):
-  ├────5min────┤────5min────┤────5min────┤
+```mermaid
+gantt
+    title Windowing Types
+    dateFormat  HH:mm
+    axisFormat  %H:%M
 
-Hopping (size=5min, advance=1min):
-  ├────5min────┤
-       ├────5min────┤
-            ├────5min────┤
+    section Tumbling (size=5min)
+    Window 1 :t1, 00:00, 5m
+    Window 2 :t2, after t1, 5m
+    Window 3 :t3, after t2, 5m
 
-Session (inactivity gap=30min):
-  ──●●●──────────────────────●●──────●
-  └─session─┘                └session┘
+    section Hopping (size=5min, advance=1min)
+    Window 1 :h1, 00:00, 5m
+    Window 2 :h2, 00:01, 5m
+    Window 3 :h3, 00:02, 5m
+
+    section Session (inactivity gap=30min)
+    Session 1 :s1, 00:00, 3m
+    Session 2 :s2, 00:10, 2m
 ```
 
 ```java title="WindowedAggregations.java"
@@ -245,7 +255,7 @@ Joining a stream with a table is one of the most powerful patterns in Kafka Stre
     ```java title="StreamTableJoin.java"
     KStream<String, Order> orders = builder.stream("orders");
     KTable<String, Customer> customers = builder.table("customers");
-
+    
     KStream<String, EnrichedOrder> enriched = orders.join(
         customers,
         (order, customer) -> new EnrichedOrder(order, customer)
@@ -259,7 +269,7 @@ Joining a stream with a table is one of the most powerful patterns in Kafka Stre
     ```java title="StreamStreamJoin.java"
     KStream<String, Order> orders = builder.stream("orders");
     KStream<String, Payment> payments = builder.stream("payments");
-
+    
     KStream<String, OrderPayment> matched = orders.join(
         payments,
         (order, payment) -> new OrderPayment(order, payment),
@@ -273,7 +283,7 @@ Joining a stream with a table is one of the most powerful patterns in Kafka Stre
     ```java title="TableTableJoin.java"
     KTable<String, Order> orders = builder.table("orders");
     KTable<String, Shipment> shipments = builder.table("shipments");
-
+    
     KTable<String, OrderShipment> combined = orders.join(
         shipments,
         (order, shipment) -> new OrderShipment(order, shipment)

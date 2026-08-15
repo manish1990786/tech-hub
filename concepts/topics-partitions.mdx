@@ -27,19 +27,26 @@ Key characteristics of a Kafka topic:
 
 A **partition** is a subdivision of a topic. When you create a topic, you specify how many partitions it should have. Each partition is an independent, ordered sequence of records — a log unto itself. The partition is the fundamental unit of parallelism in Kafka: more partitions allow more consumers to read in parallel and more producers to write in parallel.
 
-Every record within a partition is assigned a unique, monotonically increasing integer called an **offset**. Offsets start at 0 for each partition and only ever increase. A record's position in Kafka is fully identified by the combination of **topic + partition + offset**.
+Every record within a partition is assigned a unique, monotonically increasing integer called an **offset**. Offsets start at 0 for each partition and only ever increase. A record's position in Kafka is fully identified by the combination of **topic \+ partition \+ offset**.
 
-```text
-Topic: "orders"  (3 partitions)
-
-Partition 0: [0]→"order-A"  [1]→"order-D"  [2]→"order-G"  [3]→"order-J"  [4]→"order-M"
-                │                │                │                │                │
-Partition 1: [0]→"order-B"  [1]→"order-E"  [2]→"order-H"  [3]→"order-K"  [4]→"order-N"
-                │                │                │                │                │
-Partition 2: [0]→"order-C"  [1]→"order-F"  [2]→"order-I"  [3]→"order-L"  [4]→"order-O"
-
-             offset 0        offset 1        offset 2        offset 3        offset 4
-             (oldest)                                                         (newest →)
+```mermaid
+flowchart LR
+    subgraph Topic["Topic: orders"]
+        subgraph P0["Partition 0"]
+            direction LR
+            P0_0["0: order-A"] --> P0_1["1: order-D"] --> P0_2["2: order-G"] --> P0_3["3: order-J"] --> P0_4["4: order-M"]
+        end
+        subgraph P1["Partition 1"]
+            direction LR
+            P1_0["0: order-B"] --> P1_1["1: order-E"] --> P1_2["2: order-H"] --> P1_3["3: order-K"] --> P1_4["4: order-N"]
+        end
+        subgraph P2["Partition 2"]
+            direction LR
+            P2_0["0: order-C"] --> P2_1["1: order-F"] --> P2_2["2: order-I"] --> P2_3["3: order-L"] --> P2_4["4: order-O"]
+        end
+    end
+    Oldest["oldest"] -.-> P0_0
+    P0_4 -.-> Newest["newest"]
 ```
 
 Each partition is stored and managed independently on the broker that leads it. This independence is what allows Kafka to scale: a topic with 100 partitions can theoretically be processed by up to 100 consumers in parallel (within a single consumer group).
@@ -57,14 +64,14 @@ When a producer sends a message, it can optionally include a **partition key**. 
     ```java title="ProducerWithKey.java"
     import org.apache.kafka.clients.producer.*;
     import java.util.Properties;
-
+    
     Properties props = new Properties();
     props.put("bootstrap.servers", "localhost:9092");
     props.put("key.serializer",   "org.apache.kafka.common.serialization.StringSerializer");
     props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-
+    
     KafkaProducer<String, String> producer = new KafkaProducer<>(props);
-
+    
     // Using "customer-42" as the key ensures all messages for this
     // customer always land in the same partition, preserving order.
     ProducerRecord<String, String> record = new ProducerRecord<>(
@@ -72,7 +79,7 @@ When a producer sends a message, it can optionally include a **partition key**. 
         "customer-42",   // key  ← determines partition
         "{\"item\": \"widget\", \"qty\": 2}"  // value
     );
-
+    
     producer.send(record, (metadata, exception) -> {
         if (exception == null) {
             System.out.printf("Written to partition %d at offset %d%n",
@@ -86,17 +93,17 @@ When a producer sends a message, it can optionally include a **partition key**. 
   <Tab title="Python">
     ```python title="producer_with_key.py"
     from confluent_kafka import Producer
-
+    
     producer = Producer({
         "bootstrap.servers": "localhost:9092"
     })
-
+    
     def delivery_report(err, msg):
         if err is not None:
             print(f"Delivery failed: {err}")
         else:
             print(f"Written to partition {msg.partition()} at offset {msg.offset()}")
-
+    
     # The key is encoded as bytes; all messages with the same key
     # will be routed to the same partition.
     producer.produce(
@@ -105,7 +112,7 @@ When a producer sends a message, it can optionally include a **partition key**. 
         value='{"item": "widget", "qty": 2}'.encode("utf-8"),
         callback=delivery_report
     )
-
+    
     producer.flush()
     ```
   </Tab>
@@ -119,16 +126,22 @@ When a producer sends a message, it can optionally include a **partition key**. 
 
 Kafka guarantees message ordering **within a single partition**. It does **not** guarantee ordering across partitions. This is a critical distinction.
 
-```text
-                    Topic: "orders" (3 partitions)
+```mermaid
+flowchart LR
+    Prod(["Producer"])
+    Prod -->|"msg1 (key=A)"| P0
+    Prod -->|"msg2 (key=B)"| P1
+    Prod -->|"msg3 (key=C)"| P2
+    Prod -->|"msg4 (key=A)"| P0
+    Prod -->|"msg7 (key=A)"| P0
 
-  Producer sends:  msg1(key=A) → Partition 0: [0]msg1  [3]msg4  [6]msg7
-                   msg2(key=B) → Partition 1: [0]msg2  [3]msg5
-                   msg3(key=C) → Partition 2: [0]msg3  [4]msg6
-                   msg4(key=A) → Partition 0  ↑
-                                              │
-                   Ordering guaranteed here ──┘  (all key=A messages are in order)
-                   Ordering NOT guaranteed across partitions 0, 1, 2
+    subgraph Topic["Topic: orders"]
+        P0["Partition 0<br/>msg1, msg4, msg7<br/>(key=A, ordered)"]
+        P1["Partition 1<br/>msg2, msg5<br/>(key=B, ordered)"]
+        P2["Partition 2<br/>msg3, msg6<br/>(key=C, ordered)"]
+    end
+
+    Note["Ordering guaranteed within a partition.<br/>No global ordering across partitions."]
 ```
 
 For use cases that require strict global ordering (e.g., financial ledger events), you should either use a **single partition** or ensure all related events share the same partition key — both of which trade some parallelism for ordering guarantees.
@@ -139,7 +152,7 @@ Kafka makes every partition fault-tolerant by replicating it across multiple bro
 
 - The **leader replica** handles all reads and writes for the partition.
 - **Follower replicas** continuously pull data from the leader and stay in sync.
-- The **In-Sync Replica (ISR)** list contains every replica (leader + followers) that is fully caught up. If a follower falls behind, it is removed from the ISR until it catches up again.
+- The **In-Sync Replica (ISR)** list contains every replica (leader \+ followers) that is fully caught up. If a follower falls behind, it is removed from the ISR until it catches up again.
 
 When the leader broker fails, Kafka automatically promotes one of the ISR followers to become the new leader. No data is lost as long as the ISR had at least one member at the time of failure.
 

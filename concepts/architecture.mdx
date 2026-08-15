@@ -16,26 +16,39 @@ A Kafka **cluster** is a group of one or more **brokers** — server processes t
 
 Within a cluster, partitions follow a **leader/follower** replication model. For every partition, exactly one broker acts as the **leader** — it handles all reads and writes for that partition. The remaining brokers that hold a copy of that partition are **followers**. Followers continuously replicate data from the leader and remain ready to take over if the leader fails.
 
-```text
-                  ┌─────────────────────────────────────────────┐
-                  │               Kafka Cluster                 │
-                  │                                             │
-                  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-                  │  │ Broker 1 │  │ Broker 2 │  │ Broker 3 │  │
-                  │  │          │  │          │  │          │  │
-                  │  │ P0 (L)   │  │ P0 (F)   │  │ P0 (F)   │  │
-                  │  │ P1 (F)   │  │ P1 (L)   │  │ P1 (F)   │  │
-                  │  │ P2 (F)   │  │ P2 (F)   │  │ P2 (L)   │  │
-                  │  └──────────┘  └──────────┘  └──────────┘  │
-                  └─────────────────────────────────────────────┘
-                       ▲   ▲   ▲                  │   │   │
-                       │   │   │                  ▼   ▼   ▼
-               ┌───────────────────┐    ┌────────────────────────┐
-               │     Producers     │    │    Consumer Groups     │
-               │  App A  │  App B  │    │  Group X  │  Group Y   │
-               └───────────────────┘    └────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Producers["Producers"]
+        AppA["App A"]
+        AppB["App B"]
+    end
 
-                  L = Leader Partition    F = Follower Partition
+    subgraph Cluster["Kafka Cluster"]
+        direction LR
+        subgraph B1["Broker 1"]
+            B1P0["P0 (Leader)"]
+            B1P1["P1 (Follower)"]
+            B1P2["P2 (Follower)"]
+        end
+        subgraph B2["Broker 2"]
+            B2P0["P0 (Follower)"]
+            B2P1["P1 (Leader)"]
+            B2P2["P2 (Follower)"]
+        end
+        subgraph B3["Broker 3"]
+            B3P0["P0 (Follower)"]
+            B3P1["P1 (Follower)"]
+            B3P2["P2 (Leader)"]
+        end
+    end
+
+    subgraph Consumers["Consumer Groups"]
+        GroupX["Group X"]
+        GroupY["Group Y"]
+    end
+
+    Producers --> Cluster
+    Cluster --> Consumers
 ```
 
 The **controller broker** is a special broker elected within the cluster. It monitors broker health and is responsible for triggering leader elections when a broker fails. Learn more on the [Brokers](/concepts/brokers) page.
@@ -50,6 +63,7 @@ The **controller broker** is a special broker elected within the cluster. It mon
   <Card title="Producers Deep Dive" icon="upload" href="/concepts/producers">
     Covers acks, batching, compression, partitioning strategy, retries, and idempotent producers.
   </Card>
+
   <Card title="Consumers Deep Dive" icon="download" href="/concepts/consumers">
     Covers the poll loop, offset management, auto-commit, manual commit, and consumer groups.
   </Card>
@@ -86,7 +100,7 @@ Kafka achieves fault tolerance by replicating each partition across multiple bro
 The **In-Sync Replica (ISR)** list is the set of replicas that are fully caught up with the leader. Kafka only considers a write "committed" once all replicas in the ISR have acknowledged it (when `acks=all` is configured). If a follower falls too far behind — due to network lag or broker overload — it is removed from the ISR until it catches up.
 
 | Replication Factor | Tolerated Broker Failures | Notes |
-|--------------------|--------------------------|-------|
+| --- | --- | --- |
 | 1 | 0 | Development only — no redundancy |
 | 2 | 1 | Minimum for fault tolerance |
 | 3 | 2 | Recommended for most production workloads |
