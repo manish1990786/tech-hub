@@ -1,0 +1,90 @@
+---
+title: "Kafka CLI Tools: Complete Command Reference"
+sidebarTitle: "CLI Overview"
+description: "Overview of all Apache Kafka command-line tools. Covers topics, producers, consumers, consumer groups, configurations, performance tests, and admin utilities."
+---
+
+Apache Kafka ships with a rich set of command-line tools in the `bin/` directory of every distribution. These scripts let you manage topics, produce and consume test messages, inspect consumer group state, benchmark performance, manage access control lists, and administer a KRaft cluster — all without writing a single line of application code. Whether you are setting up a new cluster, debugging a production issue, or running a load test, the CLI tools are often the fastest path to an answer.
+
+## Common Flags
+
+Before diving into individual tools, there are a few flags you will see on almost every command:
+
+<Tabs>
+  <Tab title="--bootstrap-server (Kafka 2.2+)">
+    The modern way to connect CLI tools directly to a Kafka broker. Preferred over `--zookeeper` for all current Kafka versions.
+
+    ```bash
+    --bootstrap-server localhost:9092
+    # Multiple brokers for resilience:
+    --bootstrap-server broker1:9092,broker2:9092,broker3:9092
+    ```
+  </Tab>
+  <Tab title="--zookeeper (Legacy)">
+    The older flag that connected tools to ZooKeeper rather than directly to Kafka. Only relevant for clusters still running in ZooKeeper mode on Kafka < 2.2.
+
+    ```bash
+    --zookeeper localhost:2181
+    ```
+
+    <Warning>
+      The `--zookeeper` flag is deprecated and removed from most scripts in Kafka 3.x. Always use `--bootstrap-server` unless you are working with a very old cluster.
+    </Warning>
+  </Tab>
+  <Tab title="--command-config (Auth)">
+    Points to a properties file containing security configuration (SASL credentials, TLS settings) for authenticated clusters.
+
+    ```bash
+    --command-config /etc/kafka/client-ssl.properties
+    ```
+
+    A typical `client-ssl.properties` file looks like:
+
+    ```properties
+    security.protocol=SASL_SSL
+    sasl.mechanism=PLAIN
+    sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required \
+      username="alice" password="alice-secret";
+    ssl.truststore.location=/etc/kafka/kafka.client.truststore.jks
+    ssl.truststore.password=changeit
+    ```
+  </Tab>
+</Tabs>
+
+## All CLI Tools at a Glance
+
+| Script | Purpose |
+|---|---|
+| `kafka-topics.sh` | Create, list, describe, and delete topics |
+| `kafka-console-producer.sh` | Produce messages to a topic from the command line |
+| `kafka-console-consumer.sh` | Consume and print messages from a topic to stdout |
+| `kafka-consumer-groups.sh` | Manage consumer groups, inspect lag, and reset offsets |
+| `kafka-configs.sh` | Manage dynamic configurations for topics, brokers, and clients |
+| `kafka-acls.sh` | Manage access control lists for SASL/SSL-secured clusters |
+| `kafka-log-dirs.sh` | Describe log directories and per-partition disk usage on brokers |
+| `kafka-reassign-partitions.sh` | Move partition replicas between brokers |
+| `kafka-preferred-replica-election.sh` | Trigger preferred replica election for leader balancing |
+| `kafka-producer-perf-test.sh` | Run a producer throughput and latency benchmark |
+| `kafka-consumer-perf-test.sh` | Run a consumer throughput benchmark |
+| `kafka-storage.sh` | Format storage directories and manage KRaft cluster IDs |
+| `kafka-server-start.sh` | Start a Kafka broker (or KRaft controller) |
+| `kafka-server-stop.sh` | Gracefully stop a running Kafka broker |
+
+<Tip>
+  Every script accepts `--help` to print a full usage summary with all available flags. When in doubt, run the script with no arguments or with `--help` first.
+
+  ```bash
+  bin/kafka-topics.sh --help
+  ```
+</Tip>
+
+## Deep-Dive References
+
+<CardGroup cols={2}>
+  <Card title="Topics & Config CLI" icon="table" href="/reference/cli-topics">
+    Full command reference for `kafka-topics.sh`, `kafka-consumer-groups.sh`, and `kafka-configs.sh` — including every flag and real-world examples for topic management, offset resets, and dynamic config changes.
+  </Card>
+  <Card title="Console Producer & Consumer CLI" icon="terminal" href="/reference/cli-console">
+    Full command reference for `kafka-console-producer.sh`, `kafka-console-consumer.sh`, and the performance test tools — including key/header printing, custom formatters, and benchmarking flags.
+  </Card>
+</CardGroup>

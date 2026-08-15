@@ -1,0 +1,269 @@
+---
+title: "Installing Apache Kafka on Linux, macOS, and Windows"
+sidebarTitle: "Installation"
+description: "Step-by-step instructions to install Apache Kafka on Linux, macOS, and Windows. Includes Java prerequisites, binary download, and Docker-based setup."
+---
+
+Apache Kafka is a JVM-based application that runs on any operating system with a supported Java runtime. This guide walks you through installing Kafka on Linux, macOS, and Windows — including a Docker-based option that gets you running with a single command and is the fastest path for local development.
+
+## Prerequisites
+
+Kafka requires Java 11 or Java 17. Java 21 is supported starting with Kafka 3.7. The table below shows the supported Java versions for recent Kafka releases.
+
+| Kafka Version | Java 8 | Java 11 | Java 17 | Java 21 |
+|---------------|--------|---------|---------|---------|
+| 3.7.x         | ❌      | ✅       | ✅       | ✅       |
+| 3.6.x         | ❌      | ✅       | ✅       | ⚠️ Experimental |
+| 3.5.x         | ❌      | ✅       | ✅       | ❌       |
+| 3.3.x – 3.4.x | ❌     | ✅       | ✅       | ❌       |
+| 2.8.x – 3.2.x | ✅     | ✅       | ⚠️ Experimental | ❌ |
+
+Verify your Java version before proceeding:
+
+```bash
+java -version
+```
+
+If Java is not installed, download it from [Adoptium](https://adoptium.net/) (recommended) or your OS package manager.
+
+<Tip>
+Docker is the fastest way to get Kafka running locally — no Java installation required on your host machine. Jump to the [Docker Installation](#docker-installation) section if you just want something running immediately.
+</Tip>
+
+## Platform Installation
+
+<Tabs>
+  <Tab title="Linux">
+    **1. Download the binary**
+
+    Navigate to the directory where you want to install Kafka and download the latest release:
+
+    ```bash
+    wget https://downloads.apache.org/kafka/3.7.0/kafka_2.13-3.7.0.tgz
+    ```
+
+    **2. Verify the checksum**
+
+    Always verify the download against the published SHA-512 checksum to ensure the archive has not been tampered with:
+
+    ```bash
+    # Download the checksum file
+    wget https://downloads.apache.org/kafka/3.7.0/kafka_2.13-3.7.0.tgz.sha512
+
+    # Verify
+    sha512sum -c kafka_2.13-3.7.0.tgz.sha512
+    ```
+
+    You should see `kafka_2.13-3.7.0.tgz: OK`. If the checksum does not match, delete the archive and re-download.
+
+    **3. Extract the archive**
+
+    ```bash
+    tar -xzf kafka_2.13-3.7.0.tgz
+    ```
+
+    **4. Add Kafka to your PATH**
+
+    Add the `bin/` directory to your shell's `PATH` so you can run Kafka commands from any directory.
+
+    ```bash
+    # Add to ~/.bashrc or ~/.zshrc
+    echo 'export PATH="$HOME/kafka_2.13-3.7.0/bin:$PATH"' >> ~/.bashrc
+    source ~/.bashrc
+    ```
+
+    Verify the installation:
+
+    ```bash
+    kafka-topics.sh --version
+    ```
+  </Tab>
+
+  <Tab title="macOS">
+    You can install Kafka on macOS using Homebrew (the simpler option) or by downloading the binary manually.
+
+    ### Option A — Homebrew (recommended)
+
+    If you have [Homebrew](https://brew.sh) installed, Kafka is a single command away:
+
+    ```bash
+    brew install kafka
+    ```
+
+    Homebrew installs the Kafka binaries to `/opt/homebrew/bin` (Apple Silicon) or `/usr/local/bin` (Intel), both of which are already on your `PATH`. It also installs ZooKeeper as a dependency.
+
+    Start Kafka services with Homebrew:
+
+    ```bash
+    # Start ZooKeeper
+    brew services start zookeeper
+
+    # Start Kafka
+    brew services start kafka
+    ```
+
+    ### Option B — Manual binary install
+
+    Download and extract the binary the same way as Linux:
+
+    ```bash
+    curl -O https://downloads.apache.org/kafka/3.7.0/kafka_2.13-3.7.0.tgz
+    shasum -a 512 kafka_2.13-3.7.0.tgz  # compare with published checksum
+    tar -xzf kafka_2.13-3.7.0.tgz
+    cd kafka_2.13-3.7.0
+    ```
+
+    Add to your PATH:
+
+    ```bash
+    # Add to ~/.zshrc (macOS default since Catalina)
+    echo 'export PATH="$PWD/bin:$PATH"' >> ~/.zshrc
+    source ~/.zshrc
+    ```
+  </Tab>
+
+  <Tab title="Windows">
+    <Note>
+    Running Kafka natively on Windows has historically been problematic. **WSL 2 (Windows Subsystem for Linux) is the strongly recommended approach** — it gives you a full Linux environment and makes every Linux command in this documentation work without modification.
+    </Note>
+
+    ### Option A — WSL 2 (recommended)
+
+    **1. Enable WSL 2** by opening PowerShell as Administrator and running:
+
+    ```powershell
+    wsl --install
+    ```
+
+    Restart your machine if prompted. This installs Ubuntu by default.
+
+    **2. Open your WSL terminal** and follow the Linux installation instructions above exactly.
+
+    ### Option B — Native Windows (PowerShell)
+
+    If you cannot use WSL 2, you can run Kafka directly on Windows using PowerShell.
+
+    **1. Download the binary**
+
+    ```powershell
+    Invoke-WebRequest `
+      -Uri "https://downloads.apache.org/kafka/3.7.0/kafka_2.13-3.7.0.tgz" `
+      -OutFile "kafka_2.13-3.7.0.tgz"
+    ```
+
+    **2. Extract the archive**
+
+    You need a tool like [7-Zip](https://www.7-zip.org/) or the built-in `tar` command (available on Windows 10+):
+
+    ```powershell
+    tar -xzf kafka_2.13-3.7.0.tgz
+    cd kafka_2.13-3.7.0
+    ```
+
+    **3. Use `.bat` scripts**
+
+    On Windows, use the `.bat` scripts in the `bin\windows\` directory instead of the `.sh` scripts:
+
+    ```powershell
+    # Start ZooKeeper
+    .\bin\windows\zookeeper-server-start.bat .\config\zookeeper.properties
+
+    # Start Kafka
+    .\bin\windows\kafka-server-start.bat .\config\server.properties
+    ```
+
+    <Warning>
+    Windows paths with spaces can cause issues with Kafka scripts. Install Kafka to a path that contains no spaces (e.g., `C:\kafka`).
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Docker Installation
+
+Docker is the fastest way to run Kafka locally — no Java installation, no manual path configuration, and no dependency management. The `docker-compose.yml` below starts a ZooKeeper node and a single Kafka broker with sensible defaults.
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+```
+
+Save this file as `docker-compose.yml` in your project directory, then start both services:
+
+```bash
+docker compose up -d
+```
+
+Verify both containers are running:
+
+```bash
+docker compose ps
+```
+
+To stop and remove the containers when you are done:
+
+```bash
+docker compose down
+```
+
+<Tip>
+Add `-v` to `docker compose down` (i.e., `docker compose down -v`) to also delete the named volumes and start fresh next time.
+</Tip>
+
+## Verifying Your Installation
+
+Regardless of which method you used, confirm Kafka is working by checking the version and listing topics against your running broker.
+
+```bash
+# Check the Kafka version (does not require a running broker)
+kafka-topics.sh --version
+
+# List topics on a running broker (broker must be started first)
+kafka-topics.sh --list --bootstrap-server localhost:9092
+```
+
+Expected output for `--version` looks similar to:
+
+```
+3.7.0 (Commit:...)
+```
+
+## Directory Structure
+
+After extracting the binary archive, the Kafka installation directory contains the following key subdirectories:
+
+| Directory | Purpose |
+|-----------|---------|
+| `bin/` | Shell scripts for starting servers, managing topics, producing, and consuming. Windows equivalents live in `bin/windows/`. |
+| `config/` | Default configuration files for the broker (`server.properties`), ZooKeeper (`zookeeper.properties`), consumers, producers, and KRaft mode (`kraft/server.properties`). |
+| `libs/` | All JAR files that make up the Kafka runtime. You rarely need to interact with this directory directly. |
+| `logs/` | Created at runtime. Contains broker logs, ZooKeeper logs, and controller logs. Useful for diagnosing startup issues. |
+| `site-docs/` | The bundled HTML documentation for the installed release. |
+
+<Note>
+The `config/server.properties` file is your primary broker configuration. Key settings include `log.dirs` (where Kafka stores topic data), `num.partitions` (default partition count for auto-created topics), and `log.retention.hours`.
+</Note>

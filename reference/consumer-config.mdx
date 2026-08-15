@@ -1,0 +1,117 @@
+---
+title: "Kafka Consumer Configuration Reference"
+sidebarTitle: "Consumer Config"
+description: "Complete reference for Apache Kafka consumer configuration properties. Covers group management, offset management, fetch settings, and session timeouts."
+---
+
+The Kafka consumer client is configured through properties you pass when constructing a `KafkaConsumer` instance. These properties determine how the consumer joins a consumer group, how it tracks its position in each partition, how aggressively it fetches data from brokers, and how tolerant the cluster is of slow or restarting consumers. Getting these settings right is essential for building reliable, high-throughput stream processing applications.
+
+<Note>
+  Properties shown with a dash (—) in the Default column have no built-in default. `group.id` in particular is effectively required whenever you call `subscribe()`.
+</Note>
+
+<AccordionGroup>
+
+  <Accordion title="Connection & Identity">
+    These properties tell the consumer how to find the cluster and how it identifies itself within a consumer group.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `bootstrap.servers` | — | Comma-separated list of `host:port` broker addresses for initial cluster discovery. |
+    | `group.id` | — | The name of the consumer group this instance belongs to. Required when using `subscribe()`. All consumers sharing a `group.id` collaborate to consume a topic. |
+    | `client.id` | — | A logical name for this consumer instance. Appears in broker logs and metrics — set it to something meaningful. |
+    | `group.instance.id` | `null` | Assigns a stable, static identity to this consumer within the group. Prevents unnecessary rebalances when the consumer restarts. |
+
+    <Tip>
+      Set `group.instance.id` on long-lived consumer processes (e.g., containers with a stable hostname). This enables static group membership, which avoids the rebalance storm you would otherwise see every time a pod restarts.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="Offset Management">
+    These properties control where the consumer starts reading and how it commits its position back to the broker.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `auto.offset.reset` | `latest` | What to do when no committed offset exists for a partition (or the offset is out of range). `earliest` reads from the very beginning; `latest` reads only new messages; `none` throws an exception. |
+    | `enable.auto.commit` | `true` | When `true`, the consumer automatically commits the latest offset periodically in the background. |
+    | `auto.commit.interval.ms` | `5000` | How often (in milliseconds) the consumer commits offsets automatically when `enable.auto.commit=true`. |
+
+    <Warning>
+      Auto-commit provides at-least-once semantics at best, and can cause message loss if your application crashes between a `poll()` call and finishing processing. For exactly-once or at-most-once processing, disable auto-commit and call `commitSync()` or `commitAsync()` manually after processing each batch.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Session & Heartbeat">
+    These properties define how quickly the group coordinator detects that a consumer has died or stalled, which triggers a rebalance to redistribute its partitions.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `session.timeout.ms` | `45000` | If the coordinator does not receive a heartbeat from a consumer within this window, it marks the consumer as dead and triggers a rebalance. |
+    | `heartbeat.interval.ms` | `3000` | How often the consumer sends heartbeats to the group coordinator. Must be significantly less than `session.timeout.ms`. |
+    | `max.poll.interval.ms` | `300000` | Maximum time between two `poll()` calls before the consumer is considered dead. If your processing takes longer than this, increase this value or process records in a background thread. |
+    | `max.poll.records` | `500` | Maximum number of records returned by a single `poll()` call. Reduce this value if individual records are expensive to process and you risk exceeding `max.poll.interval.ms`. |
+
+    <Info>
+      A common rule of thumb: `heartbeat.interval.ms` should be roughly one-third of `session.timeout.ms`. For example, `session.timeout.ms=45000` pairs well with `heartbeat.interval.ms=15000`.
+    </Info>
+  </Accordion>
+
+  <Accordion title="Fetch Configuration">
+    These properties govern how much data the consumer requests from brokers in each fetch request, letting you balance between latency and throughput.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `fetch.min.bytes` | `1` | The minimum amount of data the server should return on a fetch. If less is available, the server waits up to `fetch.max.wait.ms`. Setting this higher improves throughput but adds latency. |
+    | `fetch.max.bytes` | `52428800` | Maximum bytes the server returns for an entire fetch response across all partitions (50 MB). |
+    | `fetch.max.wait.ms` | `500` | Maximum time the server waits to accumulate `fetch.min.bytes` before responding, even if `fetch.min.bytes` has not been satisfied. |
+    | `max.partition.fetch.bytes` | `1048576` | Maximum bytes the server returns per partition in a single fetch request (1 MB). Must be at least as large as `max.message.bytes` on the broker/topic. |
+
+    <Tip>
+      To reduce fetch latency for real-time applications, keep `fetch.min.bytes=1` (the default). For batch-oriented pipelines where throughput matters more, increase `fetch.min.bytes` to `50000`–`500000` and raise `fetch.max.wait.ms` accordingly.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="Deserialization">
+    The consumer requires a deserializer for both keys and values. These classes convert raw bytes back into the objects your application works with.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `key.deserializer` | — | Fully-qualified class name of the deserializer for record keys. Must match the serializer used by the producer. |
+    | `value.deserializer` | — | Fully-qualified class name of the deserializer for record values. Must match the serializer used by the producer. |
+
+    **Commonly used deserializers** (all in `org.apache.kafka.common.serialization`):
+
+    | Class | Use case |
+    |---|---|
+    | `StringDeserializer` | Plain `java.lang.String` |
+    | `LongDeserializer` | `java.lang.Long` numeric values |
+    | `ByteArrayDeserializer` | Raw binary payloads |
+    | `ByteBufferDeserializer` | NIO `ByteBuffer` payloads |
+
+    <Warning>
+      If the consumer's deserializer does not match the producer's serializer, you will get garbled data or a deserialization exception. Always verify both sides use compatible types and, when using a schema registry, the same subject naming strategy.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Partition Assignment">
+    Kafka supports several strategies for assigning topic partitions to consumers within a group. The strategy affects how rebalances behave and how evenly work is distributed.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `partition.assignment.strategy` | `RangeAssignor, CooperativeStickyAssignor` | Ordered list of partition assignment strategy classes. Kafka tries strategies left-to-right until one succeeds. |
+
+    **Built-in strategies:**
+
+    | Strategy | Behaviour |
+    |---|---|
+    | `RangeAssignor` | Assigns contiguous ranges of partitions per topic. Default legacy behaviour. |
+    | `RoundRobinAssignor` | Distributes partitions evenly across consumers using round-robin. |
+    | `StickyAssignor` | Minimises partition movement during rebalances while keeping assignments balanced. |
+    | `CooperativeStickyAssignor` | Like `StickyAssignor` but uses incremental cooperative rebalancing — consumers keep processing during the rebalance. Preferred for new deployments. |
+
+    <Info>
+      If you are migrating from an older Kafka client that uses `RangeAssignor`, you can safely add `CooperativeStickyAssignor` to the list. Kafka will negotiate the highest-priority compatible strategy across all group members.
+    </Info>
+  </Accordion>
+
+</AccordionGroup>

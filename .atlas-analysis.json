@@ -1,29 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
+  "projectType": "data-platform",
+  "projectName": "Apache Kafka",
+  "projectDescription": "A comprehensive learning guide for Apache Kafka — the industry-standard distributed event streaming platform for building real-time data pipelines and streaming applications.",
   "theme": "maple",
-  "name": "Apache Kafka",
-  "colors": {
-    "primary": "#ef7025",
-    "light": "#eec9bc",
-    "dark": "#4fa1ab"
-  },
-  "favicon": "/favicon.svg",
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Apache Kafka Docs",
-        "href": "https://kafka.apache.org/documentation/"
-      }
-    ],
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/apache/kafka"
-    }
-  },
+  "primaryColor": "#ef7025",
+  "lightColor": "#eec9bc",
+  "darkColor": "#4fa1ab",
   "navigation": {
     "tabs": [
       {
@@ -111,9 +93,28 @@
       }
     ]
   },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/apache/kafka"
-    }
-  }
+  "keyFeatures": [
+    "Distributed, fault-tolerant event streaming at massive scale",
+    "High-throughput, low-latency publish-subscribe messaging",
+    "Persistent, replayable log storage with configurable retention",
+    "Consumer groups for parallel, load-balanced message processing",
+    "Kafka Streams for stateful stream processing without external systems",
+    "Kafka Connect for data integration with hundreds of connectors",
+    "Schema Registry for enforcing data contracts with Avro/JSON Schema",
+    "Exactly-once semantics with transactional producers",
+    "KRaft mode: ZooKeeper-free, self-managed metadata quorum",
+    "Rich CLI tooling for topic management, consumer groups, and debugging"
+  ],
+  "publicApiSurface": [
+    "kafka-topics.sh --create / --describe / --delete / --list",
+    "kafka-console-producer.sh",
+    "kafka-console-consumer.sh",
+    "kafka-consumer-groups.sh",
+    "Producer API: send(), flush(), close()",
+    "Consumer API: subscribe(), poll(), commit()",
+    "Streams API: StreamsBuilder, KStream, KTable, GlobalKTable",
+    "Connect API: Source/Sink Connectors",
+    "AdminClient API: createTopics(), deleteTopics(), describeCluster()",
+    "Schema Registry REST API"
+  ]
 }

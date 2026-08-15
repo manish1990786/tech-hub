@@ -1,0 +1,63 @@
+---
+title: "Introduction to Apache Kafka Documentation"
+sidebarTitle: "Introduction"
+description: "An overview of this Kafka learning guide: what you will learn, how the content is organized, and how to get the most out of these docs."
+---
+
+Apache Kafka is a distributed event streaming platform designed for high-throughput, fault-tolerant, and real-time data pipelines. Originally built at LinkedIn to handle billions of events per day, Kafka has evolved into the de facto standard for streaming data infrastructure across industries ranging from finance and e-commerce to healthcare and gaming. This guide is your comprehensive resource for learning Kafka — covering everything from foundational concepts like topics, partitions, and consumer groups, to advanced operational topics like tuning brokers for production, managing schema evolution, and building stateful stream processing applications with Kafka Streams. Whether you're evaluating Kafka for the first time or deepening expertise you already have, you'll find structured, example-driven content at every level.
+
+## How This Guide Is Organized
+
+The documentation is broken into six major sections, each focused on a distinct stage of your Kafka journey. You can work through them in order or jump directly to the section most relevant to what you're building right now.
+
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="door-open" href="/introduction">
+    You are here. This section explains what Kafka is, who this guide is for, and how to navigate the content effectively.
+  </Card>
+  <Card title="Core Concepts" icon="brain" href="/concepts/architecture">
+    A thorough grounding in Kafka's architecture — brokers, topics, partitions, offsets, replication, and the distributed log model.
+  </Card>
+  <Card title="Getting Started" icon="rocket" href="/quickstart">
+    Hands-on quickstart guides for installing Kafka locally, creating topics, and writing your first producer and consumer in multiple languages.
+  </Card>
+  <Card title="Guides" icon="book-open" href="/guides/producers-deep-dive">
+    Deep-dive tutorials on producers, consumers, Kafka Streams, Kafka Connect, Schema Registry, transactions, and security.
+  </Card>
+  <Card title="Operations" icon="server" href="/operations/configuration">
+    Production-focused content on cluster sizing, monitoring, performance tuning, upgrades, disaster recovery, and multi-datacenter deployments.
+  </Card>
+  <Card title="Reference" icon="code" href="/reference/broker-config">
+    Complete configuration references for brokers, producers, consumers, the Admin API, and the Kafka Streams DSL.
+  </Card>
+</CardGroup>
+
+## Who This Guide Is For
+
+This guide is written for three audiences, and the content is intentionally layered so each group gets value from different sections.
+
+**Application Developers** building event-driven services, microservices, or real-time features will get the most from the Getting Started and Guides sections. You'll learn how to produce and consume events reliably, choose the right serialization format, handle errors and retries, and implement exactly-once semantics in your applications.
+
+**Data Engineers** designing and operating streaming data pipelines will find the Core Concepts, Guides, and Operations sections most relevant. You'll learn how to use Kafka Connect to integrate dozens of data sources and sinks, model your data with schemas, and build low-latency ETL pipelines that scale horizontally.
+
+**Architects and Technical Leads** evaluating Kafka or designing systems around it will benefit from the conceptual sections, use-case coverage, and operational guidance. You'll gain a clear mental model of Kafka's guarantees, trade-offs, and failure modes — the foundation you need to make confident design decisions.
+
+## Prerequisites
+
+You don't need prior experience with Kafka to use this guide, but a few baseline skills will help you move faster and get more out of the examples.
+
+- **Distributed systems basics** — You should be comfortable with the idea that data can live across multiple machines and that networks are unreliable. Concepts like replication, partitioning, and leader election will come up frequently; prior exposure to them at even a high level is helpful.
+- **Command-line familiarity** — The quickstart and many examples use shell commands to start Kafka services, create topics, and run producer/consumer scripts. You should be comfortable opening a terminal and running commands on Linux or macOS.
+- **A JDK installed** — Kafka itself runs on the JVM. The code examples in this guide are provided in multiple languages (Java, Python, Go), but the broker scripts require JDK 11 or later to be available on your `PATH`.
+- **Basic networking concepts** — Understanding what a hostname, port, and TCP connection are will help when configuring listeners and bootstrap servers.
+
+<Note>
+  If you're missing some of these prerequisites, don't worry — the guide explains Kafka-specific concepts from scratch. You may just need to pause occasionally to look up a general distributed systems or networking concept.
+</Note>
+
+## How to Get the Most Out of This Guide
+
+Reading alone will only take you so far with Kafka. The most effective way to learn is to run the examples as you go. Every code snippet in this guide is tested and self-contained — you should be able to copy it directly into your terminal or editor and run it without modification, provided your environment meets the stated prerequisites.
+
+<Tip>
+  Ready to dive straight in? Skip ahead to the [Quickstart](/quickstart) to have Kafka running and your first messages flowing in under ten minutes. You can always come back to the conceptual sections once you have something concrete to reason about.
+</Tip>

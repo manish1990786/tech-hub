@@ -1,0 +1,325 @@
+---
+title: "Kafka Streams: Build Stateful Stream Processing Apps"
+sidebarTitle: "Kafka Streams"
+description: "Learn Kafka Streams — the Java library for building real-time stream processing applications. Covers KStream, KTable, windowing, joins, and stateful aggregations."
+---
+
+Kafka Streams is a lightweight Java library embedded directly in your application for processing data in real time. Unlike Spark Structured Streaming or Apache Flink, Kafka Streams requires no separate processing cluster — your application IS the stream processor. It reads from Kafka topics, runs your transformation logic, and writes results back to Kafka, all within ordinary JVM processes that you deploy and scale like any other microservice.
+
+## Key Concepts
+
+Before writing code, it helps to understand the four core abstractions Kafka Streams builds on.
+
+<AccordionGroup>
+  <Accordion title="KStream — an unbounded stream of records">
+    A `KStream` represents a continuous, append-only stream of key-value records. Every record is an independent event. Think of it like an infinite log where each entry stands alone — reading the stream again would give you every event ever produced. This maps directly to reading a Kafka topic as a stream of individual messages.
+  </Accordion>
+  <Accordion title="KTable — a changelog stream (materialized view)">
+    A `KTable` represents the latest value for each key — a table whose rows are continuously updated as new records arrive. Each new record for a key overwrites the previous value for that key. Internally, `KTable` is backed by a Kafka topic (the changelog) and a local state store (RocksDB by default).
+  </Accordion>
+  <Accordion title="GlobalKTable — a fully replicated table">
+    A `GlobalKTable` is similar to a `KTable` but its data is replicated to **every** application instance rather than partitioned across instances. This makes it ideal for small reference data (user profiles, product catalogue) that you want to join with a `KStream` without needing co-partitioning.
+  </Accordion>
+  <Accordion title="Topology — the processing graph">
+    A topology is the directed acyclic graph (DAG) of source nodes, processor nodes, and sink nodes that defines your data pipeline. You build it using the `StreamsBuilder` DSL or the lower-level `Topology` API. When `KafkaStreams` starts, it parallelises the topology across available stream threads and partitions.
+  </Accordion>
+</AccordionGroup>
+
+## Adding Kafka Streams Dependency
+
+Add the `kafka-streams` library to your project. No other dependencies are required beyond a JVM.
+
+<Tabs>
+  <Tab title="Maven">
+    ```xml title="pom.xml"
+    <!-- Maven -->
+    <dependency>
+        <groupId>org.apache.kafka</groupId>
+        <artifactId>kafka-streams</artifactId>
+        <version>3.7.0</version>
+    </dependency>
+    ```
+  </Tab>
+  <Tab title="Gradle">
+    ```gradle title="build.gradle"
+    // Gradle
+    implementation 'org.apache.kafka:kafka-streams:3.7.0'
+    ```
+  </Tab>
+</Tabs>
+
+## Your First Streams App
+
+The classic word count example demonstrates the full lifecycle: configure → build topology → start → shut down gracefully.
+
+```java title="WordCountApp.java"
+import org.apache.kafka.common.serialization.Serdes;
+import org.apache.kafka.streams.*;
+import org.apache.kafka.streams.kstream.*;
+import java.util.Arrays;
+import java.util.Properties;
+
+public class WordCountApp {
+    public static void main(String[] args) {
+
+        // 1. Configure the Streams application
+        Properties props = new Properties();
+        props.put(StreamsConfig.APPLICATION_ID_CONFIG, "wordcount-app");
+        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+        props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+
+        // 2. Build the processing topology
+        StreamsBuilder builder = new StreamsBuilder();
+
+        KStream<String, String> textLines = builder.stream("text-input");
+
+        KTable<String, Long> wordCounts = textLines
+            .flatMapValues(value -> Arrays.asList(value.toLowerCase().split("\\W+")))
+            .groupBy((key, word) -> word)
+            .count(Materialized.as("counts-store"));
+
+        wordCounts
+            .toStream()
+            .to("word-count-output", Produced.with(Serdes.String(), Serdes.Long()));
+
+        // 3. Start the application
+        KafkaStreams streams = new KafkaStreams(builder.build(), props);
+
+        // 4. Shut down gracefully on JVM exit
+        Runtime.getRuntime().addShutdownHook(new Thread(streams::close));
+
+        streams.start();
+    }
+}
+```
+
+<Tip>
+  Kafka Streams apps can run as **multiple instances** for parallelism. Each instance is given a unique `client.id` automatically and handles a disjoint subset of the input partitions. Scale out simply by starting more JVM processes with the same `application.id` — Kafka Streams rebalances work across them automatically.
+</Tip>
+
+## KStream Operations
+
+`KStream` provides a rich set of stateless transformation operators that map directly to functional programming concepts.
+
+| Operation | Description | Example |
+|---|---|---|
+| `filter` | Keep records matching a predicate | Remove null values |
+| `map` | Transform each record into a new key-value pair | Enrich with metadata |
+| `mapValues` | Transform only the value, keep the key | Parse JSON string → object |
+| `flatMap` | One record → zero or more records (can change key) | Split a batch event |
+| `flatMapValues` | One record → zero or more values (key unchanged) | Tokenise a sentence |
+| `peek` | Side effect per record without changing it | Logging, metrics |
+| `branch` | Split a stream into multiple streams based on predicates | Route by event type |
+| `merge` | Combine two streams into one | Merge regional streams |
+
+```java title="KStreamOperations.java"
+KStream<String, Order> orders = builder.stream("orders");
+
+// Filter: only process high-value orders
+KStream<String, Order> highValue = orders
+    .filter((key, order) -> order.getAmount() > 1000.0);
+
+// Map: enrich with a timestamp
+KStream<String, Order> enriched = orders
+    .mapValues(order -> order.withProcessedAt(Instant.now()));
+
+// Branch: route to different topics by status
+Map<String, KStream<String, Order>> branches = orders
+    .split(Named.as("status-"))
+    .branch((k, v) -> "PAID".equals(v.getStatus()), Branched.as("paid"))
+    .branch((k, v) -> "PENDING".equals(v.getStatus()), Branched.as("pending"))
+    .defaultBranch(Branched.as("other"));
+
+branches.get("status-paid").to("paid-orders");
+branches.get("status-pending").to("pending-orders");
+```
+
+## KTable
+
+A `KTable` treats each new record as an upsert: a record with an existing key replaces the previous value; a record with a null value deletes the key (tombstone). This makes `KTable` ideal for maintaining materialised views of changing state.
+
+```java title="KTableExample.java"
+// Build a KTable from a compacted topic
+KTable<String, UserProfile> users = builder.table(
+    "user-profiles",
+    Materialized.<String, UserProfile, KeyValueStore<Bytes, byte[]>>as("users-store")
+        .withValueSerde(new UserProfileSerde())
+);
+
+// Query the state store interactively (while the app is running)
+ReadOnlyKeyValueStore<String, UserProfile> store =
+    streams.store(StoreQueryParameters.fromNameAndType(
+        "users-store", QueryableStoreTypes.keyValueStore()));
+
+UserProfile profile = store.get("user-123");
+```
+
+KTable changes are backed by a **changelog topic** in Kafka. When your application restarts, it replays the changelog to restore the local state store — so your materialised view survives restarts without data loss.
+
+## Stateful Operations
+
+Stateful operations aggregate records across time, maintaining intermediate results in a local state store (backed by RocksDB).
+
+```java title="StatefulAggregations.java"
+KStream<String, Order> orders = builder.stream("orders");
+
+// Count orders per customer
+KTable<String, Long> orderCount = orders
+    .groupByKey()
+    .count(Materialized.as("order-count-store"));
+
+// Sum order amounts per customer
+KTable<String, Double> orderTotal = orders
+    .groupByKey()
+    .aggregate(
+        () -> 0.0,                                          // initialiser
+        (customerId, order, total) -> total + order.getAmount(), // aggregator
+        Materialized.<String, Double, KeyValueStore<Bytes, byte[]>>as("order-total-store")
+            .withValueSerde(Serdes.Double())
+    );
+
+// Reduce: keep only the most expensive order per customer
+KTable<String, Order> maxOrder = orders
+    .groupByKey()
+    .reduce((existing, newOrder) ->
+        newOrder.getAmount() > existing.getAmount() ? newOrder : existing,
+        Materialized.as("max-order-store")
+    );
+```
+
+## Windowing
+
+Windowing constrains aggregations to a specific time range. Kafka Streams supports four window types:
+
+| Window Type | Description | Use Case |
+|---|---|---|
+| **Tumbling** | Fixed-size, non-overlapping windows | Metrics per minute: `[0–60s]`, `[60–120s]`, … |
+| **Hopping** | Fixed-size windows that overlap | Rolling 5-min window advancing every 1 min |
+| **Sliding** | Windows defined by a max time difference between records | Events within 10s of each other |
+| **Session** | Variable-size windows defined by inactivity gaps | User sessions (close after 30 min of silence) |
+
+```
+Tumbling (size=5min):
+  ├────5min────┤────5min────┤────5min────┤
+
+Hopping (size=5min, advance=1min):
+  ├────5min────┤
+       ├────5min────┤
+            ├────5min────┤
+
+Session (inactivity gap=30min):
+  ──●●●──────────────────────●●──────●
+  └─session─┘                └session┘
+```
+
+```java title="WindowedAggregations.java"
+// Tumbling window: count orders per 1-minute window
+KTable<Windowed<String>, Long> tumblingCount = orders
+    .groupByKey()
+    .windowedBy(TimeWindows.ofSizeWithNoGrace(Duration.ofMinutes(1)))
+    .count(Materialized.as("tumbling-count-store"));
+
+// Hopping window: 5-minute window, advance every 1 minute
+KTable<Windowed<String>, Long> hoppingCount = orders
+    .groupByKey()
+    .windowedBy(TimeWindows.ofSizeAndGrace(Duration.ofMinutes(5), Duration.ofMinutes(1))
+        .advanceBy(Duration.ofMinutes(1)))
+    .count();
+
+// Session window: group events within 30 minutes of each other
+KTable<Windowed<String>, Long> sessionCount = orders
+    .groupByKey()
+    .windowedBy(SessionWindows.ofInactivityGapWithNoGrace(Duration.ofMinutes(30)))
+    .count();
+```
+
+## Stream-Table Joins
+
+Joining a stream with a table is one of the most powerful patterns in Kafka Streams — it lets you enrich events with the latest state.
+
+<Tabs>
+  <Tab title="KStream-KTable Join">
+    Enriches each stream event with the current table value for the same key. The join is **one-sided** — the stream drives the join; table updates alone do not produce output.
+
+    ```java title="StreamTableJoin.java"
+    KStream<String, Order> orders = builder.stream("orders");
+    KTable<String, Customer> customers = builder.table("customers");
+
+    KStream<String, EnrichedOrder> enriched = orders.join(
+        customers,
+        (order, customer) -> new EnrichedOrder(order, customer)
+    );
+    enriched.to("enriched-orders");
+    ```
+  </Tab>
+  <Tab title="KStream-KStream Join">
+    Joins two streams within a time window. Useful for correlating events from different systems that happen close in time.
+
+    ```java title="StreamStreamJoin.java"
+    KStream<String, Order> orders = builder.stream("orders");
+    KStream<String, Payment> payments = builder.stream("payments");
+
+    KStream<String, OrderPayment> matched = orders.join(
+        payments,
+        (order, payment) -> new OrderPayment(order, payment),
+        JoinWindows.ofTimeDifferenceWithNoGrace(Duration.ofMinutes(5))
+    );
+    ```
+  </Tab>
+  <Tab title="KTable-KTable Join">
+    Joins two tables by key. Both sides trigger output when updated — any change to either table for a given key emits a new joined record.
+
+    ```java title="TableTableJoin.java"
+    KTable<String, Order> orders = builder.table("orders");
+    KTable<String, Shipment> shipments = builder.table("shipments");
+
+    KTable<String, OrderShipment> combined = orders.join(
+        shipments,
+        (order, shipment) -> new OrderShipment(order, shipment)
+    );
+    combined.toStream().to("order-shipments");
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  For `KStream-KTable` and `KTable-KTable` joins, both topics must be **co-partitioned**: they must have the same number of partitions and their keys must be distributed by the same partitioner. Kafka Streams will throw a `TopologyException` at startup if co-partitioning is violated.
+</Note>
+
+## Error Handling
+
+Kafka Streams provides pluggable exception handlers to control what happens when deserialization or production errors occur.
+
+```java title="ErrorHandlers.java"
+// Handle deserialization errors (corrupted/unexpected message format)
+props.put(
+    StreamsConfig.DEFAULT_DESERIALIZATION_EXCEPTION_HANDLER_CLASS_CONFIG,
+    LogAndContinueExceptionHandler.class  // skip bad records and log a warning
+    // alternatives: LogAndFailExceptionHandler (default — stops the app)
+);
+
+// Handle production errors (writing to output topic fails)
+props.put(
+    StreamsConfig.DEFAULT_PRODUCTION_EXCEPTION_HANDLER_CLASS_CONFIG,
+    DefaultProductionExceptionHandler.class
+);
+
+// Custom deserialization handler
+public class DeadLetterDeserializationHandler implements DeserializationExceptionHandler {
+    @Override
+    public DeserializationHandlerResponse handle(
+            ProcessorContext context,
+            ConsumerRecord<byte[], byte[]> record,
+            Exception exception) {
+        // Write the raw bytes to a dead-letter topic for later inspection
+        deadLetterProducer.send(new ProducerRecord<>("dead-letter", record.key(), record.value()));
+        return DeserializationHandlerResponse.CONTINUE;
+    }
+
+    @Override
+    public void configure(Map<String, ?> configs) {}
+}
+```
+
+You can also wrap individual processors in a `try-catch` and use `peek()` to route errors to a dead-letter stream without stopping the entire topology.

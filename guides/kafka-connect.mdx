@@ -1,0 +1,263 @@
+---
+title: "Kafka Connect: Data Integration Without Code"
+sidebarTitle: "Kafka Connect"
+description: "Learn Kafka Connect for streaming data between Kafka and external systems. Covers source and sink connectors, REST API, transforms, and deployment modes."
+---
+
+Kafka Connect is a scalable, fault-tolerant framework for streaming data between Kafka and external systems — databases, file systems, object stores, search engines, message queues, and more. Instead of writing custom producer and consumer code for every integration, you configure a connector: a pre-built plugin that knows how to talk to a particular system. Connect handles parallelism, failure recovery, offset tracking, and restarts for you.
+
+## Connect Architecture
+
+A Connect deployment is made up of four building blocks that work together to move data reliably.
+
+<AccordionGroup>
+  <Accordion title="Workers">
+    Workers are the JVM processes that run connector and task code. In **standalone mode** there is a single worker process, which is convenient for development and simple pipelines. In **distributed mode**, multiple worker processes form a cluster and share the load — connectors and tasks are automatically redistributed if a worker fails.
+
+    Worker configuration includes the converter classes used to serialize data (JSON, Avro, Protobuf) and the REST port for the management API.
+  </Accordion>
+  <Accordion title="Connectors">
+    A connector is a logical job that encapsulates the configuration for a specific integration (e.g. "replicate the `orders` table from MySQL to Kafka"). The connector decides how many tasks are needed and what each task should do. It does not move data itself — that is the job of tasks.
+  </Accordion>
+  <Accordion title="Tasks">
+    Tasks are the units of parallelism that actually move data. A source task pulls data from the external system and publishes records to Kafka; a sink task consumes records from Kafka and pushes them to the external system. You control the degree of parallelism with the `tasks.max` connector configuration.
+  </Accordion>
+  <Accordion title="Transforms (SMTs)">
+    Single Message Transforms (SMTs) are lightweight, chainable transformations applied to each record as it passes through the connector pipeline — before it is written to Kafka (source) or after it is read from Kafka (sink). Use transforms for field renaming, masking, routing, and timestamping without modifying connector code.
+  </Accordion>
+</AccordionGroup>
+
+## Connector Types
+
+<CardGroup cols={2}>
+  <Card title="Source Connectors" icon="arrow-right-to-bracket">
+    Pull data **from an external system into Kafka**. Examples: read rows from a database table, tail a log file, consume from another message queue, subscribe to an HTTP webhook. The source connector is responsible for tracking what data has already been read (its "offset").
+  </Card>
+  <Card title="Sink Connectors" icon="arrow-right-from-bracket">
+    Push data **from Kafka into an external system**. Examples: write records to Elasticsearch, persist to S3, insert into a database, forward to a REST API. The sink connector commits Kafka consumer offsets after successfully writing to the target.
+  </Card>
+</CardGroup>
+
+## Running Connect in Standalone Mode
+
+Standalone mode runs a single worker process and is the fastest way to get a connector running locally. It stores offsets in a local file rather than a Kafka topic.
+
+<Steps>
+  <Step title="Edit the worker properties file">
+    ```properties title="config/connect-standalone.properties"
+    bootstrap.servers=localhost:9092
+    key.converter=org.apache.kafka.connect.json.JsonConverter
+    value.converter=org.apache.kafka.connect.json.JsonConverter
+    key.converter.schemas.enable=false
+    value.converter.schemas.enable=false
+    offset.storage.file.filename=/tmp/connect.offsets
+    ```
+  </Step>
+  <Step title="Edit the connector properties file">
+    ```properties title="config/connect-file-source.properties"
+    name=file-source-connector
+    connector.class=FileStreamSource
+    tasks.max=1
+    file=/var/log/app.log
+    topic=app-logs
+    ```
+  </Step>
+  <Step title="Start the standalone worker">
+    ```bash title="Start standalone Connect"
+    bin/connect-standalone.sh \
+      config/connect-standalone.properties \
+      config/connect-file-source.properties
+    ```
+  </Step>
+</Steps>
+
+## Running Connect in Distributed Mode
+
+Distributed mode is the recommended approach for production. Multiple worker processes collaborate, and connectors are managed via the REST API rather than static property files. Offset, config, and status information is stored in dedicated Kafka topics.
+
+```properties title="config/connect-distributed.properties"
+bootstrap.servers=kafka-1:9092,kafka-2:9092,kafka-3:9092
+
+# All workers in the same group share work
+group.id=connect-cluster
+
+# Internal topics for coordination (create these with replication.factor=3 in production)
+config.storage.topic=connect-configs
+offset.storage.topic=connect-offsets
+status.storage.topic=connect-status
+
+config.storage.replication.factor=3
+offset.storage.replication.factor=3
+status.storage.replication.factor=3
+
+key.converter=org.apache.kafka.connect.json.JsonConverter
+value.converter=org.apache.kafka.connect.json.JsonConverter
+
+# REST API port
+rest.port=8083
+```
+
+Start as many worker processes as you need:
+
+```bash title="Start distributed workers"
+# Worker 1
+bin/connect-distributed.sh config/connect-distributed.properties
+
+# Worker 2 (on a different host or port)
+bin/connect-distributed.sh config/connect-distributed.properties
+```
+
+All workers in the same `group.id` automatically balance connectors and tasks among themselves.
+
+## The Connect REST API
+
+Distributed Connect exposes a REST API on port 8083 for managing connectors without restarting any process.
+
+<CodeGroup>
+```bash List connectors
+# List all connectors
+curl localhost:8083/connectors
+```
+
+```bash Create a connector
+# Create a connector
+curl -X POST localhost:8083/connectors \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "file-source",
+    "config": {
+      "connector.class": "FileStreamSource",
+      "tasks.max": "1",
+      "file": "/tmp/test.txt",
+      "topic": "file-events"
+    }
+  }'
+```
+
+```bash Check connector status
+# Check connector status (RUNNING, FAILED, PAUSED, etc.)
+curl localhost:8083/connectors/file-source/status
+```
+
+```bash Pause a connector
+# Pause a connector (stops all tasks)
+curl -X PUT localhost:8083/connectors/file-source/pause
+```
+
+```bash Resume a connector
+# Resume a paused connector
+curl -X PUT localhost:8083/connectors/file-source/resume
+```
+
+```bash Delete a connector
+# Delete a connector and all its tasks
+curl -X DELETE localhost:8083/connectors/file-source
+```
+</CodeGroup>
+
+You can also update a running connector's configuration without deleting and recreating it:
+
+```bash title="Update connector config"
+curl -X PUT localhost:8083/connectors/file-source/config \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "connector.class": "FileStreamSource",
+    "tasks.max": "2",
+    "file": "/tmp/test.txt",
+    "topic": "file-events"
+  }'
+```
+
+## Single Message Transforms (SMT)
+
+SMTs are applied in the connector configuration under the `transforms` key. You can chain multiple transforms in order.
+
+```json title="Connector config with SMTs"
+{
+  "name": "jdbc-source",
+  "config": {
+    "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
+    "tasks.max": "1",
+    "connection.url": "jdbc:postgresql://localhost:5432/shop",
+    "table.whitelist": "orders",
+    "mode": "incrementing",
+    "incrementing.column.name": "id",
+    "topic.prefix": "db-",
+
+    "transforms": "dropSensitive,addTimestamp",
+
+    "transforms.dropSensitive.type": "org.apache.kafka.connect.transforms.ReplaceField$Value",
+    "transforms.dropSensitive.blacklist": "credit_card_number,cvv",
+
+    "transforms.addTimestamp.type": "org.apache.kafka.connect.transforms.InsertField$Value",
+    "transforms.addTimestamp.timestamp.field": "ingest_time"
+  }
+}
+```
+
+Commonly used SMT types:
+
+| Transform | Purpose |
+|---|---|
+| `ReplaceField` | Remove or rename fields from the record |
+| `MaskField` | Replace sensitive field values with a fixed mask (e.g. `****`) |
+| `InsertField` | Add a new field (static value, offset, or timestamp) |
+| `TimestampConverter` | Convert between string, Unix epoch, and `Date` timestamp formats |
+| `ExtractField` | Pull a nested field to the top level |
+| `ValueToKey` | Promote a value field to become the message key |
+| `RegexRouter` | Rename the destination topic using a regex substitution |
+
+## Popular Connectors
+
+<Tip>
+  [Confluent Hub](https://www.confluent.io/hub/) hosts **200+ pre-built connectors** for databases, cloud services, SaaS tools, and more. Most can be installed with a single `confluent-hub install` command.
+</Tip>
+
+<CardGroup cols={3}>
+  <Card title="Debezium CDC" icon="database">
+    Captures row-level changes from MySQL, PostgreSQL, MongoDB, SQL Server, and Oracle using database transaction logs. The gold standard for Change Data Capture (CDC) into Kafka.
+  </Card>
+  <Card title="JDBC Source / Sink" icon="table">
+    Reads from and writes to any JDBC-compatible relational database. Supports incrementing, timestamp, and bulk modes for source; upsert and insert modes for sink.
+  </Card>
+  <Card title="Elasticsearch Sink" icon="magnifying-glass">
+    Writes Kafka records to Elasticsearch indices in real time. Supports dynamic index routing, schema evolution, and bulk indexing for high throughput.
+  </Card>
+  <Card title="S3 Sink" icon="cloud">
+    Partitions and writes Kafka records to Amazon S3 (or GCS / Azure Blob) as Avro, Parquet, JSON, or CSV files. Ideal for building data lake pipelines.
+  </Card>
+  <Card title="MongoDB Source / Sink" icon="leaf">
+    Source uses MongoDB Change Streams for CDC; Sink writes records into MongoDB collections with configurable write strategies and document ID mapping.
+  </Card>
+  <Card title="HTTP Sink" icon="globe">
+    POSTs Kafka records to any REST API endpoint. Supports OAuth, custom headers, batching, and retry logic — no webhook boilerplate needed.
+  </Card>
+</CardGroup>
+
+## Dead Letter Queue
+
+When a connector task encounters a record it cannot process (deserialization failure, schema mismatch, downstream write error), it can route that record to a **Dead Letter Queue (DLQ)** topic instead of stopping the task.
+
+```json title="Connector config with DLQ"
+{
+  "name": "my-sink",
+  "config": {
+    "connector.class": "io.confluent.connect.elasticsearch.ElasticsearchSinkConnector",
+    "tasks.max": "2",
+    "topics": "orders",
+
+    "errors.tolerance": "all",
+    "errors.deadletterqueue.topic.name": "orders-dlq",
+    "errors.deadletterqueue.topic.replication.factor": "3",
+    "errors.deadletterqueue.context.headers.enable": "true",
+    "errors.log.enable": "true",
+    "errors.log.include.messages": "true"
+  }
+}
+```
+
+With `errors.deadletterqueue.context.headers.enable=true`, each DLQ record includes Kafka headers that describe why the record failed, which connector produced it, and the original topic/partition/offset — making it straightforward to diagnose and replay problematic records.
+
+<Note>
+  Set `errors.tolerance=all` on both source and sink connectors to prevent a single bad record from halting your entire pipeline. Monitor the DLQ topic with a separate consumer and alert when its size grows unexpectedly.
+</Note>

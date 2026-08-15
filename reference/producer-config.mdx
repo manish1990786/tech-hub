@@ -1,0 +1,103 @@
+---
+title: "Kafka Producer Configuration Reference"
+sidebarTitle: "Producer Config"
+description: "Complete reference for Apache Kafka producer configuration properties. Covers serializers, acknowledgments, batching, compression, retries, and exactly-once settings."
+---
+
+The Kafka producer client is configured through a set of key-value properties that you pass when constructing a `KafkaProducer` instance. These properties control everything from how the producer connects to the cluster, to how it serializes your data, to how aggressively it batches records before sending them. Choosing the right values lets you trade off between throughput, latency, and delivery guarantees to match your application's needs.
+
+<Note>
+  Properties shown with a dash (—) in the Default column have no built-in default and are **required** unless noted otherwise.
+</Note>
+
+<AccordionGroup>
+
+  <Accordion title="Connection">
+    These properties tell the producer how to locate the Kafka cluster and identify itself.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `bootstrap.servers` | — | Comma-separated list of `host:port` broker addresses used for initial cluster discovery. You do not need to list every broker — just enough for reliable bootstrapping. |
+    | `client.id` | — | A logical name for this producer instance. It appears in broker logs and JMX metrics, making it invaluable for debugging. |
+    | `metadata.max.age.ms` | `300000` | Forces a metadata refresh even if no partition leadership change has been detected. Useful for picking up new brokers or topics promptly. |
+
+    <Tip>
+      Always set `client.id` to something meaningful (e.g., `payments-service-producer`). It makes correlating broker-side logs with application behaviour far easier.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="Serialization">
+    The producer requires a serializer for both the key and the value of every record. These classes convert your objects into raw bytes before they are sent over the wire.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `key.serializer` | — | Fully-qualified class name of the serializer for record keys. |
+    | `value.serializer` | — | Fully-qualified class name of the serializer for record values. |
+
+    **Commonly used serializers** (all in `org.apache.kafka.common.serialization`):
+
+    | Class | Use case |
+    |---|---|
+    | `StringSerializer` | Plain `java.lang.String` keys or values |
+    | `LongSerializer` | `java.lang.Long` numeric values |
+    | `ByteArraySerializer` | Pre-serialized binary payloads |
+    | `ByteBufferSerializer` | NIO `ByteBuffer` payloads |
+
+    <Info>
+      For structured data (JSON, Avro, Protobuf) you will typically use a schema-registry-aware serializer such as Confluent's `KafkaAvroSerializer` rather than the built-in ones listed above.
+    </Info>
+  </Accordion>
+
+  <Accordion title="Delivery Guarantees">
+    These properties determine what level of durability and exactly-once semantics the producer enforces when delivering records to the broker.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `acks` | `1` | Number of broker acknowledgments required before a send is considered successful. `0` = fire-and-forget, `1` = leader-only, `all` = full ISR acknowledgment. |
+    | `retries` | `2147483647` | Number of retry attempts on retriable failures (e.g., `LEADER_NOT_AVAILABLE`). With idempotence enabled, retries are safe. |
+    | `retry.backoff.ms` | `100` | Time to wait between retry attempts. |
+    | `delivery.timeout.ms` | `120000` | Upper bound (2 minutes) on the total time from `send()` call to final acknowledgment or failure, including retries. |
+    | `enable.idempotence` | `true` | When `true`, the producer assigns sequence numbers to records so the broker can deduplicate retries, giving exactly-once delivery per partition. |
+    | `max.in.flight.requests.per.connection` | `5` | Maximum number of unacknowledged requests per broker connection. Must be `≤ 5` when idempotence is enabled; set to `1` if order must be preserved without idempotence. |
+    | `transactional.id` | `null` | Enables the transactional producer API. Must be unique per logical producer instance. Requires `enable.idempotence=true`. |
+
+    <Warning>
+      Setting `acks=0` or `acks=1` with `retries>0` and `max.in.flight.requests.per.connection>1` can result in out-of-order delivery if a retry overtakes an in-flight batch. Enable idempotence to avoid this.
+    </Warning>
+
+    <Note>
+      As of Kafka 3.0, `enable.idempotence` defaults to `true`. If you explicitly set `acks` to anything other than `all` while idempotence is enabled, the producer will throw a `ConfigException`.
+    </Note>
+  </Accordion>
+
+  <Accordion title="Batching & Throughput">
+    These properties control how the producer accumulates records into batches before sending, directly impacting both throughput and end-to-end latency.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `batch.size` | `16384` | Maximum number of bytes in a single batch (16 KB). Larger batches improve throughput at the cost of latency. |
+    | `linger.ms` | `0` | Time the producer waits for a batch to fill up before sending. `0` means send immediately. Increasing this (e.g., `5`–`20 ms`) significantly improves batching efficiency. |
+    | `buffer.memory` | `33554432` | Total bytes of memory the producer uses to buffer records waiting to be sent (32 MB). |
+    | `max.block.ms` | `60000` | Maximum time `send()` will block when the buffer is full or metadata is unavailable before throwing a `TimeoutException`. |
+    | `compression.type` | `none` | Compression codec applied to batches: `none`, `gzip`, `snappy`, `lz4`, or `zstd`. Compression happens on the producer side and is decompressed by the consumer. |
+
+    <Tip>
+      For maximum throughput, set `linger.ms=5` to `20`, increase `batch.size` to `65536` or higher, and use `compression.type=lz4` or `zstd`. This can reduce network usage by 50–80% for text-heavy payloads.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="Timeouts">
+    These properties control how long the producer waits on various network and metadata operations before giving up.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `request.timeout.ms` | `30000` | Maximum time the producer waits for a response from the broker after sending a request. |
+    | `connections.max.idle.ms` | `540000` | Close idle broker connections after this many milliseconds (9 minutes). |
+    | `metadata.max.idle.ms` | `300000` | How long the producer retains metadata for a topic it has not produced to recently before discarding it. |
+
+    <Info>
+      `delivery.timeout.ms` (in the Delivery Guarantees section) acts as the overall ceiling. Make sure `request.timeout.ms` + retry delays are always less than `delivery.timeout.ms`, otherwise the delivery timeout fires before retries are exhausted.
+    </Info>
+  </Accordion>
+
+</AccordionGroup>

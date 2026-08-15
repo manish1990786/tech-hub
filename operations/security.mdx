@@ -1,0 +1,263 @@
+---
+title: "Securing Apache Kafka: TLS, SASL, and ACLs"
+sidebarTitle: "Security"
+description: "Secure your Kafka cluster with TLS encryption, SASL authentication, and Access Control Lists (ACLs). Step-by-step guides for each security mechanism."
+---
+
+Kafka's security model is layered: you independently choose how to encrypt traffic, how to authenticate clients, and how to authorise what each client is allowed to do. This separation means you can adopt the pieces that match your threat model — for example, adding TLS without enabling ACLs in early testing — and tighten each layer over time without disrupting the others. This guide walks you through enabling TLS encryption, configuring SASL authentication, and enforcing fine-grained access control with ACLs.
+
+## TLS Encryption
+
+TLS (Transport Layer Security) encrypts all data in transit between clients and brokers, and optionally between brokers themselves. Without TLS, anyone on the network path can read message payloads, consumer group metadata, and authentication credentials in cleartext.
+
+### Generating Keystores and Truststores
+
+Each broker needs a keystore (its own certificate and private key) and a truststore (the CA certificates it trusts). The `keytool` utility that ships with the JDK handles both.
+
+<Steps>
+  <Step title="Create a Certificate Authority (CA)">
+    ```bash
+    # Generate a CA key and self-signed certificate
+    openssl req -new -x509 -keyout ca-key.pem -out ca-cert.pem \
+      -days 365 -subj "/CN=Kafka-CA"
+    ```
+  </Step>
+  <Step title="Create a Broker Keystore">
+    ```bash
+    # Create a keystore and generate a key pair for broker-1
+    keytool -keystore kafka.broker1.keystore.jks \
+      -alias broker1 -validity 365 -genkey \
+      -keyalg RSA -dname "CN=broker1.example.com"
+
+    # Generate a certificate signing request (CSR)
+    keytool -keystore kafka.broker1.keystore.jks \
+      -alias broker1 -certreq -file broker1.csr
+
+    # Sign the CSR with your CA
+    openssl x509 -req -CA ca-cert.pem -CAkey ca-key.pem \
+      -in broker1.csr -out broker1-signed.pem \
+      -days 365 -CAcreateserial
+    ```
+  </Step>
+  <Step title="Import Certificates into the Keystore">
+    ```bash
+    # Import the CA certificate first
+    keytool -keystore kafka.broker1.keystore.jks \
+      -alias CARoot -import -file ca-cert.pem
+
+    # Import the signed broker certificate
+    keytool -keystore kafka.broker1.keystore.jks \
+      -alias broker1 -import -file broker1-signed.pem
+    ```
+  </Step>
+  <Step title="Create a Truststore">
+    ```bash
+    # Clients and other brokers use this to verify the broker's certificate
+    keytool -keystore kafka.truststore.jks \
+      -alias CARoot -import -file ca-cert.pem
+    ```
+  </Step>
+</Steps>
+
+### Broker SSL Configuration
+
+Add the following to `server.properties` on each broker:
+
+```properties
+listeners=SSL://:9093
+advertised.listeners=SSL://your-broker-hostname:9093
+listener.security.protocol.map=SSL:SSL
+
+ssl.keystore.location=/var/ssl/private/kafka.server.keystore.jks
+ssl.keystore.password=keystore-password
+ssl.key.password=key-password
+ssl.truststore.location=/var/ssl/private/kafka.server.truststore.jks
+ssl.truststore.password=truststore-password
+
+# Require clients to present a valid certificate (mutual TLS).
+# Set to 'none' if you only need server-side TLS.
+ssl.client.auth=required
+```
+
+### Client SSL Configuration
+
+Producers and consumers need matching truststore (and, for mutual TLS, keystore) settings:
+
+```properties
+security.protocol=SSL
+ssl.truststore.location=/var/ssl/private/kafka.client.truststore.jks
+ssl.truststore.password=truststore-password
+
+# Only required when ssl.client.auth=required on the broker
+ssl.keystore.location=/var/ssl/private/kafka.client.keystore.jks
+ssl.keystore.password=keystore-password
+ssl.key.password=key-password
+```
+
+## SASL Authentication
+
+SASL (Simple Authentication and Security Layer) adds identity to your connections. Kafka supports five SASL mechanisms; choose based on your infrastructure and security requirements.
+
+<Accordion title="SASL/PLAIN — simple username and password">
+  Easiest to set up; credentials are transmitted in cleartext at the SASL layer. **Always combine with TLS.**
+
+  Create a JAAS configuration file on each broker:
+
+  ```
+  // jaas.conf
+  KafkaServer {
+    org.apache.kafka.common.security.plain.PlainLoginModule required
+    username="admin"
+    password="admin-secret"
+    user_admin="admin-secret"
+    user_alice="alice-secret"
+    user_bob="bob-secret";
+  };
+  ```
+
+  Reference it when starting the broker:
+
+  ```bash
+  export KAFKA_OPTS="-Djava.security.auth.login.config=/etc/kafka/jaas.conf"
+  ```
+
+  Add to `server.properties`:
+
+  ```properties
+  sasl.enabled.mechanisms=PLAIN
+  sasl.mechanism.inter.broker.protocol=PLAIN
+  listeners=SASL_SSL://:9094
+  ```
+</Accordion>
+
+<Accordion title="SASL/SCRAM — recommended for most clusters">
+  SCRAM-SHA-256 and SCRAM-SHA-512 store credentials in ZooKeeper/KRaft metadata and perform a challenge-response handshake, so passwords are never transmitted in cleartext. This makes them safer than PLAIN even without TLS, though you should still use TLS.
+
+  Add users with the Kafka CLI:
+
+  ```bash
+  bin/kafka-configs.sh --bootstrap-server localhost:9092 \
+    --alter --add-config 'SCRAM-SHA-256=[iterations=8192,password=alice-secret]' \
+    --entity-type users --entity-name alice
+  ```
+
+  Add to `server.properties`:
+
+  ```properties
+  sasl.enabled.mechanisms=SCRAM-SHA-256
+  sasl.mechanism.inter.broker.protocol=SCRAM-SHA-256
+  listeners=SASL_SSL://:9094
+  ```
+
+  Client `jaas.conf`:
+
+  ```
+  KafkaClient {
+    org.apache.kafka.common.security.scram.ScramLoginModule required
+    username="alice"
+    password="alice-secret";
+  };
+  ```
+</Accordion>
+
+<Accordion title="SASL/GSSAPI (Kerberos)">
+  Integrates with an existing Kerberos KDC (e.g. Active Directory). Ideal for organisations that already manage Kerberos principals.
+
+  ```properties
+  sasl.enabled.mechanisms=GSSAPI
+  sasl.kerberos.service.name=kafka
+  ```
+
+  Each broker needs a valid Kerberos keytab file and a principal in the form `kafka/hostname@REALM`.
+</Accordion>
+
+<Accordion title="SASL/OAUTHBEARER">
+  Delegates authentication to an OAuth 2.0 / OIDC identity provider. Suitable for cloud-native environments where you already issue JWTs for service-to-service auth.
+
+  ```properties
+  sasl.enabled.mechanisms=OAUTHBEARER
+  sasl.login.callback.handler.class=org.apache.kafka.common.security.oauthbearer.secured.OAuthBearerLoginCallbackHandler
+  sasl.oauthbearer.token.endpoint.url=https://auth.example.com/oauth/token
+  ```
+</Accordion>
+
+<Warning>
+  SASL/PLAIN transmits credentials in cleartext at the SASL layer. Always pair it with TLS (`SASL_SSL`) — never use `SASL_PLAINTEXT` with PLAIN in any environment where the network is not fully trusted.
+</Warning>
+
+## Access Control Lists (ACLs)
+
+ACLs control what authenticated principals (users, service accounts) are allowed to do once they have connected. You must enable an authorizer in `server.properties` before ACLs take effect:
+
+```properties
+# For ZooKeeper-based clusters:
+authorizer.class.name=kafka.security.authorizer.AclAuthorizer
+allow.everyone.if.no.acl.found=false
+
+# For KRaft clusters:
+authorizer.class.name=org.apache.kafka.metadata.authorizer.StandardAuthorizer
+```
+
+<Note>
+  Setting `allow.everyone.if.no.acl.found=false` means access is denied by default if no ACL matches — the safe default for production. Set it to `true` only during initial migration to avoid locking out existing clients.
+</Note>
+
+### Managing ACLs with kafka-acls.sh
+
+```bash
+# Grant producer permission — alice can write to the "orders" topic
+bin/kafka-acls.sh --bootstrap-server localhost:9092 \
+  --add --allow-principal User:alice \
+  --operation Write --topic orders
+
+# Grant consumer permission — bob can read from "orders" as part of the
+# "order-processor" consumer group
+bin/kafka-acls.sh --bootstrap-server localhost:9092 \
+  --add --allow-principal User:bob \
+  --operation Read --topic orders \
+  --group order-processor
+
+# List all ACLs on the cluster
+bin/kafka-acls.sh --bootstrap-server localhost:9092 --list
+```
+
+### Common ACL Operations
+
+| Operation | Resource type | Typical grantee |
+|---|---|---|
+| `Read` | Topic | Consumers |
+| `Write` | Topic | Producers |
+| `Create` | Cluster | Schema Registry, admin tooling |
+| `Delete` | Topic | Admin principals only |
+| `Describe` | Topic | Monitoring tools, consumers |
+| `Read` | Group | Consumer groups |
+| `Describe` | Group | Monitoring and admin tools |
+
+<Tip>
+  Grant only the minimum permissions each principal needs. A producer needs `Write` and `Describe` on its topic; it should not have `Read` or `Delete`. Least-privilege ACLs limit the blast radius of a compromised credential.
+</Tip>
+
+## Security Best Practices
+
+Use this checklist when hardening a Kafka cluster for production:
+
+<Steps>
+  <Step title="Enable TLS on all listeners">
+    Never run `PLAINTEXT` listeners on a network that is accessible outside your local machine. Use `SSL` or `SASL_SSL` for every inter-broker and client-facing listener.
+  </Step>
+  <Step title="Prefer SCRAM over PLAIN">
+    SCRAM-SHA-256 or SCRAM-SHA-512 provides stronger credential protection than PLAIN and does not require a static JAAS file with all passwords baked in.
+  </Step>
+  <Step title="Enable ACLs in production">
+    Set `allow.everyone.if.no.acl.found=false` and create explicit ACLs for every service account. Audit ACL changes with your standard change-management process.
+  </Step>
+  <Step title="Rotate credentials regularly">
+    SCRAM credentials can be updated via `kafka-configs.sh` without restarting the cluster. TLS certificates should be renewed before expiry — automate this with a tool like cert-manager or Let's Encrypt.
+  </Step>
+  <Step title="Isolate inter-broker traffic">
+    Use a dedicated listener for inter-broker replication (set via `inter.broker.listener.name`) so you can apply different security policies for internal vs external traffic.
+  </Step>
+  <Step title="Disable unnecessary features">
+    Set `auto.create.topics.enable=false` and `delete.topic.enable=true` only for authorised admin principals to prevent accidental data loss or topic sprawl.
+  </Step>
+</Steps>

@@ -1,0 +1,209 @@
+---
+title: "Kafka Producers: How Messages Are Published"
+sidebarTitle: "Producers"
+description: "Learn how Kafka producers publish messages to topics. Covers acks, batching, compression, partitioning strategy, retries, and idempotent producers."
+---
+
+A Kafka **producer** is a client application that publishes records to one or more Kafka topics. Producers are designed to be high-throughput, fault-tolerant, and flexible — they handle everything from partition selection to batching, compression, retries, and acknowledgment guarantees. Understanding how to configure your producer is essential for balancing throughput, latency, and durability in your Kafka deployment.
+
+## Producer Lifecycle
+
+Every producer goes through a well-defined lifecycle. Understanding these phases helps you write clean, resource-safe producer code.
+
+<Steps>
+  <Step title="Create">
+    Instantiate a `KafkaProducer` with a `Properties` object containing your configuration (bootstrap servers, serializers, acks, etc.). During construction, the producer establishes initial connections to the Kafka cluster and fetches cluster metadata (broker list, topic/partition assignments).
+  </Step>
+  <Step title="Send">
+    Call `producer.send(record)` to place a record into the producer's internal send buffer. This call is **asynchronous by default** — it returns a `Future<RecordMetadata>` and does not block. Records are batched and compressed before being sent to the broker.
+  </Step>
+  <Step title="Flush">
+    Call `producer.flush()` to block until all buffered records have been delivered to the broker and acknowledged. This is essential before shutting down to avoid data loss.
+  </Step>
+  <Step title="Close">
+    Call `producer.close()` to flush any remaining buffered records, release network connections, and free internal resources. Always call `close()` in a `finally` block or use a try-with-resources statement.
+  </Step>
+</Steps>
+
+## Acknowledgment Modes
+
+The `acks` configuration controls how many broker acknowledgments the producer requires before considering a write successful. This is the primary knob for trading **durability** against **latency**.
+
+| `acks` Value | Durability | Latency | Description |
+|---|---|---|---|
+| `0` | None | Lowest | Producer does not wait for any acknowledgment. Fire-and-forget. |
+| `1` | Moderate | Low | Leader broker acknowledges after writing to its local log. Followers are not consulted. |
+| `all` (or `-1`) | Highest | Higher | Leader waits for all in-sync replicas (ISR) to acknowledge. No data loss as long as ISR has at least one member. |
+
+<Warning>
+  `acks=1` is **not safe** against leader failure. If the leader crashes immediately after acknowledging the write but before followers have replicated it, the message is lost. For production workloads where data loss is unacceptable, always use `acks=all` combined with `min.insync.replicas=2`.
+</Warning>
+
+## Message Batching
+
+The Kafka producer does not send each record individually. Instead, it accumulates records into **batches** per partition before sending them to the broker. This dramatically reduces network round-trips and improves throughput.
+
+Two configuration parameters control batching behavior:
+
+- **`batch.size`** (default: `16384` bytes / 16 KB) — The maximum size of a batch for a single partition. When a batch reaches this size, it is sent immediately regardless of `linger.ms`. Increasing this value (e.g., to 64 KB or 128 KB) can improve throughput at the cost of slightly higher per-message latency.
+
+- **`linger.ms`** (default: `0` ms) — The maximum time the producer waits for a batch to fill up before sending it. A value of `0` means batches are sent as soon as there is a sender thread available (minimal latency). Increasing it to `5`–`20` ms allows more records to accumulate in each batch, improving throughput.
+
+<Tip>
+  For high-throughput pipelines, try `batch.size=65536` (64 KB) and `linger.ms=10`. For low-latency pipelines (e.g., real-time alerting), keep `linger.ms=0` and use a smaller `batch.size`.
+</Tip>
+
+## Compression
+
+Kafka supports transparent message compression at the producer level. The producer compresses entire **batches** before sending them to the broker, where they are stored compressed and decompressed only by the consumer.
+
+| Codec | Compression Ratio | CPU Usage | Best For |
+|---|---|---|---|
+| `none` | 1× (no compression) | None | Development, already-compressed data |
+| `gzip` | High | High | Archival, infrequent large messages |
+| `snappy` | Moderate | Low | General-purpose, balanced workloads |
+| `lz4` | Moderate | Very low | High-throughput pipelines, latency-sensitive |
+| `zstd` | High | Moderate | Best compression ratio with reasonable CPU, recommended for new deployments |
+
+Configure compression with `compression.type=zstd` (or your chosen codec). The broker stores the data in the same compressed format, so there is no re-compression overhead at the broker level.
+
+## Partitioning Strategy
+
+When you call `producer.send()`, the producer must decide which partition to write to. This decision follows a configurable **partitioning strategy**.
+
+<Accordion title="Default Partitioner (No Key)">
+  When no message key is provided, the default partitioner uses the **sticky partitioning** strategy (introduced in Kafka 2.4). It sticks to a single partition until the batch for that partition is full or `linger.ms` expires, then switches to a new one. This maximizes batch efficiency compared to the old round-robin behavior.
+</Accordion>
+
+<Accordion title="Key-Based Partitioning">
+  When a message key is provided, the default partitioner computes `murmur2(key) % numPartitions` to deterministically map the key to a partition. All messages with the same key always land in the same partition, guaranteeing ordering for that key. This is the most common strategy in production systems.
+</Accordion>
+
+<Accordion title="Custom Partitioner">
+  You can implement the `org.apache.kafka.clients.producer.Partitioner` interface to define your own routing logic — for example, routing VIP customers to a dedicated high-priority partition. Register it with `partitioner.class=com.example.MyCustomPartitioner`.
+</Accordion>
+
+## Retries and Idempotency
+
+Networks fail. Brokers crash. Kafka's producer can automatically retry failed sends to handle transient errors.
+
+- **`retries`** (default: `Integer.MAX_VALUE` in recent clients) — The number of times the producer will retry a failed send before giving up. Combined with `delivery.timeout.ms`, this determines how long the producer will keep trying.
+- **`retry.backoff.ms`** (default: `100` ms) — Time to wait between retry attempts.
+
+Without idempotency, retries can cause **duplicate messages** if the original send succeeded but the acknowledgment was lost before reaching the producer. Enable idempotent delivery to prevent this:
+
+- **`enable.idempotence=true`** — The broker assigns each producer a unique Producer ID (PID) and uses sequence numbers to deduplicate retried records. This guarantees **exactly-once delivery within a single session** at no throughput cost.
+
+<Info>
+  When `enable.idempotence=true` is set, Kafka automatically enforces `acks=all`, `retries=Integer.MAX_VALUE`, and `max.in.flight.requests.per.connection≤5`. You do not need to set these manually, but they are good to know.
+</Info>
+
+## Full Java Producer Example
+
+```java title="OrderProducer.java"
+import org.apache.kafka.clients.producer.*;
+import java.util.Properties;
+
+public class OrderProducer {
+    public static void main(String[] args) {
+        Properties props = new Properties();
+
+        // Cluster connection
+        props.put("bootstrap.servers", "localhost:9092");
+
+        // Serialize both key and value as plain strings
+        props.put("key.serializer",   "org.apache.kafka.common.serialization.StringSerializer");
+        props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+
+        // Wait for all in-sync replicas to acknowledge — highest durability
+        props.put("acks", "all");
+
+        // Retry up to 3 times on transient failures
+        props.put("retries", 3);
+
+        // Deduplicate retries — prevents duplicate messages on retry
+        props.put("enable.idempotence", "true");
+
+        // Batch up to 64 KB per partition before sending
+        props.put("batch.size", 65536);
+
+        // Wait up to 10 ms to fill a batch (improves throughput)
+        props.put("linger.ms", 10);
+
+        // Compress batches using zstandard
+        props.put("compression.type", "zstd");
+
+        KafkaProducer<String, String> producer = new KafkaProducer<>(props);
+
+        // The key "order-123" ensures this message always goes to the same partition
+        ProducerRecord<String, String> record = new ProducerRecord<>(
+            "orders",       // topic
+            "order-123",    // key  ← routes to a consistent partition
+            "{\"amount\": 99.99}"  // value
+        );
+
+        // send() is async; the callback fires when the broker acknowledges
+        producer.send(record, (metadata, exception) -> {
+            if (exception == null) {
+                System.out.printf("Sent to partition %d at offset %d%n",
+                    metadata.partition(), metadata.offset());
+            } else {
+                exception.printStackTrace();
+            }
+        });
+
+        // Block until all buffered records are delivered
+        producer.flush();
+
+        // Release connections and resources
+        producer.close();
+    }
+}
+```
+
+<Warning>
+  Always call `producer.flush()` before `producer.close()` — or simply rely on the fact that `close()` also flushes. However, if your application is shutting down due to an exception and you skip `flush()`, any records still in the internal buffer will be **silently discarded**. Use a try-finally block or try-with-resources to guarantee cleanup.
+</Warning>
+
+## Python Producer Example
+
+```python title="order_producer.py"
+from confluent_kafka import Producer
+
+producer = Producer({
+    "bootstrap.servers": "localhost:9092",
+
+    # Wait for all in-sync replicas to acknowledge
+    "acks": "all",
+
+    # Enable idempotent delivery to prevent duplicates on retry
+    "enable.idempotence": True,
+
+    # Batch and compression settings
+    "batch.size": 65536,       # 64 KB batch size per partition
+    "linger.ms": 10,           # Wait up to 10 ms to fill a batch
+    "compression.type": "zstd" # Compress batches before sending
+})
+
+def delivery_report(err, msg):
+    """Called once for every produced message to report delivery result."""
+    if err is not None:
+        print(f"Delivery failed for key {msg.key()}: {err}")
+    else:
+        print(
+            f"Message delivered to {msg.topic()} "
+            f"partition [{msg.partition()}] at offset {msg.offset()}"
+        )
+
+# Produce a message with a key for consistent partition routing
+producer.produce(
+    topic="orders",
+    key="order-123".encode("utf-8"),
+    value='{"amount": 99.99}'.encode("utf-8"),
+    callback=delivery_report
+)
+
+# Block until all buffered messages are delivered
+# poll() triggers delivery callbacks; flush() drains the buffer
+producer.flush()
+```

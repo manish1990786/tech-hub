@@ -1,0 +1,118 @@
+---
+title: "Kafka Brokers: The Heart of Your Kafka Cluster"
+sidebarTitle: "Brokers"
+description: "Understand Kafka brokers: how they store data, handle replication, elect leaders, and form a cluster. Learn key broker configuration and failure scenarios."
+---
+
+A Kafka **broker** is the server process at the heart of every Kafka deployment. Brokers are responsible for receiving messages from producers, storing them durably on disk, replicating them to peer brokers for fault tolerance, and serving them to consumers on demand. A production Kafka cluster is always made up of multiple brokers working in concert — it is this distributed design that gives Kafka its scalability and resilience.
+
+## What Is a Broker?
+
+At its core, a broker is a JVM process that runs on a server and manages a set of **partition replicas**. Each partition replica is an ordered, append-only log stored on the broker's local disk. Producers write to partition leaders, followers replicate from leaders, and consumers read from leaders (by default).
+
+A single broker can host hundreds or even thousands of partition replicas, making it practical to run very large topics on a modest-sized cluster. The broker exposes a binary TCP protocol that both producers and consumers speak natively.
+
+<Note>
+  A minimum of **3 brokers** is strongly recommended for any production deployment. Three brokers allow you to maintain a replication factor of 3 and tolerate the loss of 1 broker without any data unavailability.
+</Note>
+
+## Broker ID and Cluster Formation
+
+Every broker in a cluster is assigned a unique integer identifier: **`broker.id`**. This ID is set in the broker's `server.properties` configuration file and must be unique across the entire cluster.
+
+```properties title="server.properties — Broker identification"
+broker.id=1
+listeners=PLAINTEXT://broker1.example.com:9092
+log.dirs=/var/kafka/data
+```
+
+In **ZooKeeper mode**, brokers register themselves in ZooKeeper at startup. Other brokers and clients discover the cluster by querying ZooKeeper for the list of active brokers. Clients only need to know a few **bootstrap servers** — they use those to fetch the full cluster metadata (all broker addresses and partition assignments) and then communicate directly with the appropriate broker for each operation.
+
+In **KRaft mode**, brokers register with the controller quorum and the metadata is managed internally by Kafka itself. See the [ZooKeeper & KRaft](/concepts/zookeeper-kraft) page for details.
+
+## Log Storage
+
+Every partition replica stored on a broker is represented as a **log directory** on disk. Inside that directory, Kafka organizes data into **log segments** — chunks of the log that are periodically rolled over to keep individual files at a manageable size.
+
+```
+/var/kafka/data/
+  orders-0/                      ← Partition 0 of the "orders" topic
+    00000000000000000000.log      ← Data file (actual messages)
+    00000000000000000000.index    ← Offset index (offset → byte position)
+    00000000000000000000.timeindex← Timestamp index (timestamp → offset)
+    00000000000000001024.log      ← Next segment (starts at offset 1024)
+    00000000000000001024.index
+    00000000000000001024.timeindex
+  orders-1/                      ← Partition 1 of the "orders" topic
+    ...
+```
+
+The segment filename encodes the **base offset** of the first record in that segment. The `.index` file allows Kafka to find any offset within the segment in O(1) time without scanning the entire `.log` file. When a log segment reaches `log.segment.bytes` (default: 1 GB) or `log.roll.hours` (default: 168 hours), it is **rolled over** — the current segment is sealed and a new one is started.
+
+## Leader and Follower Partitions
+
+For each partition, exactly one broker is the **leader** and the rest are **followers**. All produce and consume requests for a partition are served by the leader. Followers exist solely to replicate data and stand by to take over if the leader fails.
+
+The **In-Sync Replica (ISR) list** is the set of replicas (leader + followers) that are fully caught up with the leader's log. A follower is removed from the ISR if it falls behind by more than `replica.lag.time.max.ms` (default: 30 seconds). A follower that has been removed will be added back to the ISR once it catches up again.
+
+```
+Partition 0 — Replication Factor 3
+
+  Broker 1: Leader (offset 0–999)     ← accepts all reads and writes
+  Broker 2: Follower, ISR             ← fully caught up, in ISR
+  Broker 3: Follower, ISR             ← fully caught up, in ISR
+
+  Write is committed once all 3 replicas acknowledge (acks=all)
+```
+
+## Controller Broker
+
+One broker in the cluster holds the special role of **controller**. The controller is an ordinary broker with one extra responsibility: it monitors broker liveness and manages **partition leadership elections**.
+
+The controller watches for broker failures. When a broker goes down, the controller identifies all partitions for which that broker was the leader and elects a new leader from the remaining ISR members for each affected partition. This process typically completes in milliseconds.
+
+There is only ever **one active controller** at a time. In ZooKeeper mode, the controller is elected via a ZooKeeper ephemeral node. In KRaft mode, the controller role is handled by the Raft-based controller quorum.
+
+<Info>
+  In KRaft mode, the controller quorum (typically 3 or 5 dedicated controller nodes) replaces ZooKeeper entirely. The controller quorum uses the Raft consensus algorithm to elect a leader among themselves, and that leader acts as the active Kafka controller. This eliminates the dependency on an external ZooKeeper cluster.
+</Info>
+
+## Broker Failure and Recovery
+
+Understanding what happens when a broker fails is critical for designing resilient Kafka systems.
+
+<Steps>
+  <Step title="Broker goes offline">
+    The failed broker stops sending heartbeats to ZooKeeper (or, in KRaft, the controller quorum stops receiving pings from the broker). After the session timeout, the broker is declared dead.
+  </Step>
+  <Step title="Controller detects the failure">
+    The controller is notified of the broker failure. It identifies all partitions for which the dead broker was the leader.
+  </Step>
+  <Step title="Leader election">
+    For each affected partition, the controller promotes the first replica in the ISR list to be the new leader. The ISR is used because it guarantees the new leader has all committed data.
+  </Step>
+  <Step title="Metadata update">
+    The controller propagates the new leader assignments to all other brokers. Clients (producers and consumers) fetch updated metadata and begin routing requests to the new leaders.
+  </Step>
+  <Step title="Broker recovers">
+    When the failed broker comes back online, it rejoins the cluster as a follower for all its partitions and begins replicating from the current leaders to catch up. Once fully caught up, it is added back to the ISR and may eventually be reassigned as a leader.
+  </Step>
+</Steps>
+
+<Warning>
+  **Unclean leader election** (`unclean.leader.election.enable=true`) allows a broker that is NOT in the ISR to be elected as leader. This prevents a partition from becoming permanently unavailable if all ISR members are offline, but it **guarantees data loss** because the new leader may be missing recent committed writes. This setting defaults to `false` and should only be enabled when availability is strictly more important than consistency.
+</Warning>
+
+## Key Broker Configurations
+
+| Configuration | Default | Description |
+|---|---|---|
+| `broker.id` | (required) | Unique integer identifier for this broker in the cluster. |
+| `log.dirs` | `/tmp/kafka-logs` | Comma-separated list of directories where log data is stored. Use multiple paths across different disks for better I/O throughput. |
+| `num.partitions` | `1` | Default number of partitions for auto-created topics. |
+| `log.retention.hours` | `168` | How long (in hours) to retain log segments before deletion. Equivalent to 7 days. |
+| `log.segment.bytes` | `1073741824` | Maximum size (in bytes) of a single log segment file (1 GB). When reached, a new segment is created. |
+| `min.insync.replicas` | `1` | Minimum number of replicas that must acknowledge a write (with `acks=all`) for it to be considered successful. Set to `2` for production. |
+| `default.replication.factor` | `1` | Default replication factor for auto-created topics. Set to `3` for production. |
+| `num.network.threads` | `3` | Number of threads handling network requests. Increase for high-throughput clusters. |
+| `num.io.threads` | `8` | Number of threads for disk I/O. Tune based on number of disks available. |

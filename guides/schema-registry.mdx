@@ -1,0 +1,281 @@
+---
+title: "Schema Registry: Enforce Data Contracts in Kafka"
+sidebarTitle: "Schema Registry"
+description: "Learn how to use Confluent Schema Registry to manage Avro, JSON Schema, and Protobuf schemas in Kafka. Covers schema evolution, compatibility modes, and serializers."
+---
+
+Without a schema registry, Kafka is a pipe that moves bytes. Producers choose the message format, consumers decode it, and if a producer changes the format without telling the consumers, everything breaks. Schema Registry solves this coordination problem by acting as a central catalogue where producers register schemas and consumers look them up — turning an implicit agreement into an enforced contract. Every message payload is prefixed with a schema ID, so consumers always know exactly which schema version to use to decode it.
+
+## Why Schema Registry?
+
+Schema Registry addresses two distinct problems that arise as your Kafka estate grows.
+
+**Schema evolution without breaking consumers.** Real systems change — new fields are added, old ones deprecated, types are refined. With Schema Registry you can evolve a schema according to a compatibility policy, and the registry will reject changes that would break existing producers or consumers before they reach production.
+
+**Binary serialisation efficiency.** Formats like Apache Avro and Protocol Buffers are compact binary formats. Without a registry, each message would need to embed the full schema definition, which would dwarf the actual payload. Schema Registry lets producers include only a 5-byte prefix (a magic byte + 4-byte schema ID), and consumers fetch the full schema from the registry once and cache it locally.
+
+## Supported Schema Formats
+
+Schema Registry supports three schema formats, each with different tradeoffs.
+
+| Format | Encoding | Schema Language | Best For |
+|---|---|---|---|
+| **Apache Avro** | Binary | JSON-based `.avsc` | High-throughput pipelines; excellent with Kafka ecosystem tooling |
+| **JSON Schema** | JSON text | JSON Schema spec | REST-friendly teams; readable messages; looser typing |
+| **Protocol Buffers** | Binary | `.proto` files | Cross-language RPC; strongly typed; Google ecosystem |
+
+<Note>
+  Avro is the most widely used format in the Kafka ecosystem and has the deepest integration with Schema Registry, Kafka Connect, and Kafka Streams. It is a good default choice unless you have a specific reason to prefer JSON Schema or Protobuf.
+</Note>
+
+## Installing Schema Registry
+
+The easiest way to run Schema Registry locally is with Docker Compose alongside your Kafka broker.
+
+```yaml title="docker-compose.yml"
+version: "3.8"
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on: [zookeeper]
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.0
+    depends_on: [kafka]
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'kafka:29092'
+    ports:
+      - "8081:8081"
+```
+
+Start the stack with `docker compose up -d` and Schema Registry will be available at `http://localhost:8081`.
+
+## Registering a Schema
+
+You can register schemas programmatically using the REST API or automatically via the serializer (the serializer registers the schema on first use if it does not already exist).
+
+<Tabs>
+  <Tab title="REST API">
+    ```bash title="Register a schema via REST"
+    curl -X POST http://localhost:8081/subjects/orders-value/versions \
+      -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
+      -d '{
+        "schema": "{\"type\":\"record\",\"name\":\"Order\",\"namespace\":\"com.example\",\"fields\":[{\"name\":\"orderId\",\"type\":\"string\"},{\"name\":\"amount\",\"type\":\"double\"},{\"name\":\"customerId\",\"type\":\"string\"}]}"
+      }'
+    # Returns: {"id": 1}
+    ```
+  </Tab>
+  <Tab title="List & Retrieve">
+    ```bash title="List and retrieve schemas"
+    # List all subjects
+    curl http://localhost:8081/subjects
+
+    # List versions for a subject
+    curl http://localhost:8081/subjects/orders-value/versions
+
+    # Retrieve a specific version
+    curl http://localhost:8081/subjects/orders-value/versions/1
+
+    # Retrieve the latest version
+    curl http://localhost:8081/subjects/orders-value/versions/latest
+
+    # Look up schema by ID
+    curl http://localhost:8081/schemas/ids/1
+    ```
+  </Tab>
+  <Tab title="Check Compatibility">
+    ```bash title="Test schema compatibility before registering"
+    # Test if a new schema is compatible with the current version
+    curl -X POST http://localhost:8081/compatibility/subjects/orders-value/versions/latest \
+      -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
+      -d '{
+        "schema": "{\"type\":\"record\",\"name\":\"Order\",\"namespace\":\"com.example\",\"fields\":[{\"name\":\"orderId\",\"type\":\"string\"},{\"name\":\"amount\",\"type\":\"double\"},{\"name\":\"customerId\",\"type\":\"string\"},{\"name\":\"region\",\"type\":\"string\",\"default\":\"us-east\"}]}"
+      }'
+    # Returns: {"is_compatible": true}
+    ```
+  </Tab>
+</Tabs>
+
+## Schema Compatibility Modes
+
+The compatibility mode tells Schema Registry which schema changes are allowed. You can set it globally or per subject.
+
+| Mode | Who Upgrades First | What Is Allowed |
+|---|---|---|
+| `BACKWARD` *(recommended default)* | Consumers | New schema can read data written by the previous schema. You can add fields with defaults; you can remove fields. |
+| `BACKWARD_TRANSITIVE` | Consumers | New schema can read data written by **any** previous version (not just the last one). |
+| `FORWARD` | Producers | Previous schema can read data written by the new schema. You can add fields (even without defaults); you can remove fields that had defaults. |
+| `FORWARD_TRANSITIVE` | Producers | Any previous version can read data written by the new schema. |
+| `FULL` | Either order | Both backward and forward compatible. Only fields with defaults can be added or removed. |
+| `FULL_TRANSITIVE` | Either order | Full compatibility against all previous versions. |
+| `NONE` | N/A | No compatibility checks. Any change is accepted. |
+
+<Warning>
+  Setting compatibility to `NONE` means the registry will accept **any** schema change — including ones that will crash consumers reading old data. Never use `NONE` in a production environment unless you are managing a one-time migration with a complete system cutover.
+</Warning>
+
+<Tip>
+  Use **`BACKWARD`** as your default. It means consumers can always be upgraded first (they will handle both the old and the new schema), and producers can follow. This is the safest rollout order for schema changes in a running system.
+</Tip>
+
+Set the compatibility mode via the REST API:
+
+```bash title="Set compatibility mode"
+# Set globally
+curl -X PUT http://localhost:8081/config \
+  -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
+  -d '{"compatibility": "BACKWARD"}'
+
+# Set per subject
+curl -X PUT http://localhost:8081/config/orders-value \
+  -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
+  -d '{"compatibility": "FULL"}'
+```
+
+## Using Avro with Java
+
+<Steps>
+  <Step title="Add Maven dependencies">
+    ```xml title="pom.xml"
+    <!-- Kafka Avro Serializer from Confluent -->
+    <dependency>
+        <groupId>io.confluent</groupId>
+        <artifactId>kafka-avro-serializer</artifactId>
+        <version>7.6.0</version>
+    </dependency>
+
+    <!-- Avro runtime -->
+    <dependency>
+        <groupId>org.apache.avro</groupId>
+        <artifactId>avro</artifactId>
+        <version>1.11.3</version>
+    </dependency>
+    ```
+
+    Add the Confluent Maven repository to your `pom.xml` if it is not already there:
+
+    ```xml title="pom.xml (repository)"
+    <repositories>
+        <repository>
+            <id>confluent</id>
+            <url>https://packages.confluent.io/maven/</url>
+        </repository>
+    </repositories>
+    ```
+  </Step>
+  <Step title="Define your Avro schema">
+    ```json title="src/main/avro/Order.avsc"
+    {
+      "type": "record",
+      "name": "Order",
+      "namespace": "com.example",
+      "fields": [
+        {"name": "orderId",    "type": "string"},
+        {"name": "customerId", "type": "string"},
+        {"name": "amount",     "type": "double"},
+        {"name": "status",     "type": {"type": "enum", "name": "OrderStatus",
+                                        "symbols": ["PENDING", "PAID", "SHIPPED", "CANCELLED"]}}
+      ]
+    }
+    ```
+
+    Use the Avro Maven plugin to generate Java classes from the `.avsc` file at build time.
+  </Step>
+  <Step title="Create an Avro producer">
+    ```java title="AvroProducer.java"
+    Properties props = new Properties();
+    props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+    props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+    props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);
+
+    // Point the serializer at Schema Registry
+    props.put("schema.registry.url", "http://localhost:8081");
+
+    KafkaProducer<String, Order> producer = new KafkaProducer<>(props);
+
+    Order order = Order.newBuilder()
+        .setOrderId("ord-001")
+        .setCustomerId("cust-42")
+        .setAmount(199.99)
+        .setStatus(OrderStatus.PENDING)
+        .build();
+
+    producer.send(new ProducerRecord<>("orders", order.getOrderId().toString(), order));
+    producer.flush();
+    producer.close();
+    ```
+  </Step>
+  <Step title="Create an Avro consumer">
+    ```java title="AvroConsumer.java"
+    Properties props = new Properties();
+    props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+    props.put(ConsumerConfig.GROUP_ID_CONFIG, "order-consumer-group");
+    props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+    props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class);
+
+    props.put("schema.registry.url", "http://localhost:8081");
+    // Deserialize to the generated Java class (not GenericRecord)
+    props.put("specific.avro.reader", true);
+
+    KafkaConsumer<String, Order> consumer = new KafkaConsumer<>(props);
+    consumer.subscribe(List.of("orders"));
+
+    while (true) {
+        ConsumerRecords<String, Order> records = consumer.poll(Duration.ofMillis(100));
+        for (ConsumerRecord<String, Order> record : records) {
+            Order order = record.value();
+            System.out.printf("Order %s from customer %s: $%.2f%n",
+                order.getOrderId(), order.getCustomerId(), order.getAmount());
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Schema Evolution
+
+Evolving your schema is inevitable. Here is how common changes map to compatibility levels.
+
+<AccordionGroup>
+  <Accordion title="✅ Adding a field with a default (backward compatible)">
+    Adding a new optional field with a default value is safe under `BACKWARD` compatibility. Consumers running the old schema will simply ignore the new field; consumers running the new schema will read the default when consuming old messages.
+
+    ```json title="Order v2 — adding a region field"
+    {
+      "type": "record",
+      "name": "Order",
+      "namespace": "com.example",
+      "fields": [
+        {"name": "orderId",    "type": "string"},
+        {"name": "customerId", "type": "string"},
+        {"name": "amount",     "type": "double"},
+        {"name": "status",     "type": "..."},
+        {"name": "region",     "type": "string", "default": "us-east"}
+      ]
+    }
+    ```
+  </Accordion>
+  <Accordion title="✅ Removing a field that had a default (forward compatible)">
+    Removing a field is safe for consumers using the new schema reading old data (they ignore the extra field). It is also safe for old consumers reading new data as long as the field had a default in the old schema. This is `FORWARD` compatible.
+  </Accordion>
+  <Accordion title="⚠️ Adding a required field without a default (breaking)">
+    Adding a field without a default means old consumers reading new data will fail — the field will be missing. This violates `BACKWARD` and `FULL` compatibility. If you must add a required field, provide a default value in the Avro schema even if your application logic treats it as mandatory.
+  </Accordion>
+  <Accordion title="❌ Renaming a field (breaking)">
+    Avro does not have a native concept of field aliases for compatibility purposes. Renaming a field is treated as removing the old field and adding a new one — which is a breaking change unless you use Avro's `aliases` feature and your compatibility mode supports it. When possible, add a new field with the desired name and deprecate the old one.
+  </Accordion>
+  <Accordion title="❌ Changing a field type (breaking)">
+    Changing `"type": "int"` to `"type": "long"` or `"type": "string"` is a breaking change under all compatibility modes except `NONE`. Schema Registry will reject the new schema registration. If you need a type change, create a new subject or version the topic name.
+  </Accordion>
+</AccordionGroup>

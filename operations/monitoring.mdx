@@ -1,0 +1,233 @@
+---
+title: "Monitoring Apache Kafka: Metrics, JMX, and Alerting"
+sidebarTitle: "Monitoring"
+description: "Learn how to monitor Apache Kafka using JMX metrics, Prometheus, Grafana, and consumer lag tools. Covers critical metrics and alerting thresholds."
+---
+
+Running Kafka without monitoring is flying blind. A broker can fall behind on replication, a consumer group can silently accumulate lag, or a controller election can go wrong — and none of these are immediately visible from message flow alone. This guide covers the most important metrics to track, how to expose them via JMX, how to scrape them into Prometheus and Grafana, and what alert thresholds to set so you hear about problems before your users do.
+
+## Key Metrics to Monitor
+
+Kafka exposes metrics through JMX (Java Management Extensions). The metrics are grouped by the component that produces them.
+
+<Accordion title="Broker Metrics">
+  These metrics reflect the health and throughput of individual Kafka brokers.
+
+  | Metric | MBean path (abbreviated) | What it tells you |
+  |---|---|---|
+  | `UnderReplicatedPartitions` | `kafka.server:type=ReplicaManager` | Partitions with fewer in-sync replicas than the configured factor |
+  | `OfflinePartitionsCount` | `kafka.controller:type=KafkaController` | Partitions with no elected leader — data is unavailable |
+  | `ActiveControllerCount` | `kafka.controller:type=KafkaController` | Must be exactly `1` across the whole cluster |
+  | `BytesInPerSec` | `kafka.server:type=BrokerTopicMetrics` | Inbound byte rate — useful for capacity planning |
+  | `BytesOutPerSec` | `kafka.server:type=BrokerTopicMetrics` | Outbound byte rate including replication traffic |
+  | `RequestQueueSize` | `kafka.network:type=RequestChannel` | Number of requests waiting to be processed |
+</Accordion>
+
+<Accordion title="Producer Metrics">
+  Collected on the producer client side; available via JMX when you run producers as long-lived services.
+
+  | Metric | What it tells you |
+  |---|---|
+  | `record-send-rate` | Records sent per second — baseline throughput indicator |
+  | `record-error-rate` | Records that failed permanently after retries — should always be 0 |
+  | `request-latency-avg` | Average round-trip time for produce requests to the broker |
+  | `batch-size-avg` | Average batch size in bytes — low values suggest batching is under-configured |
+  | `records-per-request-avg` | Average records per network request — higher is more efficient |
+</Accordion>
+
+<Accordion title="Consumer Metrics">
+  Collected on the consumer client side.
+
+  | Metric | What it tells you |
+  |---|---|
+  | `records-consumed-rate` | Records consumed per second |
+  | `records-lag` | Current lag for each partition — the most important consumer metric |
+  | `records-lag-max` | Maximum lag across all assigned partitions |
+  | `fetch-latency-avg` | Average time for a fetch request to return data |
+  | `commit-rate` | Offset commits per second — a drop may indicate consumer stalls |
+</Accordion>
+
+<Accordion title="Topic and Partition Metrics">
+  Available per topic and per partition.
+
+  | Metric | What it tells you |
+  |---|---|
+  | `LogEndOffset` | The offset of the next message to be written to a partition |
+  | `LogStartOffset` | The earliest available offset (after log compaction or retention) |
+  | `NumLogSegments` | Number of log segment files on disk for a partition |
+  | `Size` | Total on-disk size of a partition's log in bytes |
+</Accordion>
+
+## Accessing Metrics via JMX
+
+Kafka exposes all its metrics over JMX. To enable remote JMX access, set the `JMX_PORT` environment variable before starting the broker:
+
+```bash
+export JMX_PORT=9999
+bin/kafka-server-start.sh config/server.properties
+```
+
+Once the broker is running you can connect with standard JVM tools.
+
+<Tabs>
+  <Tab title="jconsole">
+    `jconsole` is the graphical JMX browser bundled with the JDK. Launch it and connect to `service:jmx:rmi:///jndi/rmi://localhost:9999/jmxrmi`.
+
+    ```bash
+    jconsole localhost:9999
+    ```
+
+    Navigate to the **MBeans** tab and expand the `kafka.server`, `kafka.controller`, and `kafka.network` namespaces to browse metrics interactively.
+  </Tab>
+  <Tab title="jmxterm">
+    `jmxterm` is a scriptable command-line JMX client — useful for automation and quick spot-checks without a GUI.
+
+    ```bash
+    # Download and run jmxterm
+    java -jar jmxterm.jar
+
+    # Inside jmxterm:
+    open localhost:9999
+    bean kafka.server:type=ReplicaManager,name=UnderReplicatedPartitions
+    get Value
+    ```
+  </Tab>
+  <Tab title="kafka-run-class.sh">
+    Kafka ships with a helper that lets you query JMX metrics directly from the command line:
+
+    ```bash
+    bin/kafka-run-class.sh kafka.tools.JmxTool \
+      --jmx-url service:jmx:rmi:///jndi/rmi://localhost:9999/jmxrmi \
+      --object-name "kafka.server:type=ReplicaManager,name=UnderReplicatedPartitions" \
+      --attributes Value
+    ```
+  </Tab>
+</Tabs>
+
+## Prometheus and Grafana
+
+For production monitoring you want metrics stored in a time-series database so you can graph trends and set up automated alerts. The standard approach is to use the **JMX Exporter** — a Java agent that translates JMX metrics into the Prometheus exposition format.
+
+### Docker Compose Setup
+
+```yaml
+# docker-compose snippet for Kafka with JMX Exporter sidecar
+kafka:
+  image: confluentinc/cp-kafka:7.6.0
+  environment:
+    KAFKA_BROKER_ID: 1
+    KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+    KAFKA_JMX_PORT: 9101
+    KAFKA_JMX_HOSTNAME: kafka
+    EXTRA_ARGS: -javaagent:/opt/kafka/jmx_prometheus_javaagent.jar=9101:/opt/kafka/kafka-metrics.yml
+  volumes:
+    - ./kafka-metrics.yml:/opt/kafka/kafka-metrics.yml
+    - ./jmx_prometheus_javaagent.jar:/opt/kafka/jmx_prometheus_javaagent.jar
+  ports:
+    - "9092:9092"
+    - "9101:9101"   # Prometheus scrape endpoint
+```
+
+### Prometheus Scrape Configuration
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: kafka
+    static_configs:
+      - targets:
+          - kafka-broker-1:9101
+          - kafka-broker-2:9101
+          - kafka-broker-3:9101
+    scrape_interval: 15s
+```
+
+### Grafana Dashboards
+
+Several community dashboards are available on the Grafana dashboard marketplace. Search for **"Kafka Overview"** (dashboard ID `7589`) or **"Kafka Exporter Overview"** (dashboard ID `11962`) for pre-built panels covering all the critical metrics described in this guide.
+
+<Note>
+  The Confluent JMX Exporter config file for Kafka (`kafka-metrics.yml`) is available in the [Confluent Platform GitHub repository](https://github.com/confluentinc/jmx-monitoring-stacks). It includes label remapping that makes Prometheus queries significantly cleaner.
+</Note>
+
+## Critical Alerts
+
+Set up the following alerts in your alerting tool (Prometheus Alertmanager, PagerDuty, etc.) before you deploy Kafka to production.
+
+| Metric | Threshold | Meaning | Recommended action |
+|---|---|---|---|
+| `UnderReplicatedPartitions` | `> 0` for 60 seconds | One or more partitions have fewer in-sync replicas than configured | Check for a failed or lagging broker; inspect broker logs |
+| `OfflinePartitionsCount` | `> 0` | At least one partition has no leader — **data is unavailable** | Immediate investigation; check for broker crashes |
+| `ActiveControllerCount` | `!= 1` | No controller elected, or two nodes think they are controller | Check ZooKeeper/KRaft health; broker logs for election errors |
+| `Consumer Lag` | `> N` (set per use-case) | Consumers are not keeping up with producers | Scale consumers, investigate processing bottlenecks |
+| `RequestQueueSize` | `> 100` sustained | Brokers are overwhelmed with client requests | Add brokers or reduce client concurrency |
+| `BytesInPerSec` | `> 80% of NIC capacity` | Approaching network saturation on a broker | Rebalance partitions, add brokers |
+
+<Tip>
+  Add an alert on `UnderReplicatedPartitions > 0` first, before everything else. It is the canary for cluster health — a broker falling behind on replication almost always shows up here before any other metric degrades.
+</Tip>
+
+## Consumer Lag Monitoring
+
+Consumer lag is the gap between the latest offset in a partition and the last offset your consumer has committed. High or growing lag means your consumers are falling behind producers and messages are piling up.
+
+### kafka-consumer-groups.sh
+
+The built-in CLI gives you an instant lag snapshot:
+
+```bash
+# List all consumer groups
+bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --list
+
+# Describe a specific group (shows per-partition lag)
+bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+  --describe --group order-processor
+```
+
+Example output:
+
+```
+GROUP           TOPIC     PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG
+order-processor orders    0          102450          102450          0
+order-processor orders    1          98210           98350           140
+order-processor orders    2          110020          110022          2
+```
+
+### Dedicated Lag Monitoring Tools
+
+For continuous lag monitoring at scale, dedicated tools provide better ergonomics than polling the CLI:
+
+<CardGroup cols={2}>
+  <Card title="Burrow" icon="gauge-high">
+    LinkedIn's open-source consumer lag monitor. Evaluates lag trends (not just current values) and produces meaningful alerts — distinguishing a consumer that is lagging but still consuming from one that is completely stalled.
+  </Card>
+  <Card title="Kafka UI" icon="table-columns">
+    A full-featured open-source web UI for Kafka. Provides consumer group lag dashboards, topic browsers, and producer tooling out of the box.
+  </Card>
+</CardGroup>
+
+## Kafka UI Tools
+
+A good UI dramatically reduces the time it takes to investigate issues and onboard new engineers. Here are the most widely used options:
+
+<Tabs>
+  <Tab title="Kafka UI (open-source)">
+    **Kafka UI** by Provectus is a free, self-hosted web interface for Kafka. It supports multiple clusters, consumer group lag tracking, topic management, schema registry integration, and message browsing.
+
+    ```bash
+    docker run -p 8080:8080 \
+      -e KAFKA_CLUSTERS_0_NAME=local \
+      -e KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092 \
+      provectuslabs/kafka-ui:latest
+    ```
+  </Tab>
+  <Tab title="AKHQ">
+    **AKHQ** (formerly KafkaHQ) is another popular open-source option with a clean UI, Avro schema support, and role-based access control for the UI itself.
+  </Tab>
+  <Tab title="Confluent Control Center">
+    Confluent's commercial offering bundled with Confluent Platform. Provides deep integration with Kafka Connect, ksqlDB, and Schema Registry, along with enterprise-grade alerting.
+  </Tab>
+  <Tab title="Redpanda Console">
+    Originally built for Redpanda, the console also works with Apache Kafka. Offers a fast, modern UI with message deserialization (JSON, Avro, Protobuf), consumer group management, and topic configuration.
+  </Tab>
+</Tabs>

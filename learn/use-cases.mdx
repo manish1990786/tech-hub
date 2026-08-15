@@ -1,0 +1,256 @@
+---
+title: "Apache Kafka Use Cases and Real-World Applications"
+sidebarTitle: "Use Cases"
+description: "Explore real-world Apache Kafka use cases including event sourcing, log aggregation, real-time analytics, microservices messaging, and data pipeline integration."
+---
+
+Apache Kafka was built to solve a specific class of problem: moving large volumes of data between systems reliably, in real time, without tightly coupling producers and consumers. Over the more than a decade since its open-source release, that core capability has been applied to an enormous range of real-world challenges — from powering fraud detection systems that evaluate millions of transactions per second, to synchronizing microservices across global infrastructure, to giving data teams access to fresh data in minutes rather than hours. This page walks through the most important and widely deployed Kafka use cases, explains what problem each one solves, and shows you how Kafka's architecture maps onto each pattern.
+
+<CardGroup cols={2}>
+  <Card title="Real-Time Analytics" icon="chart-line">
+    Stream fresh data directly into analytics dashboards, alerting systems, and ML feature stores — no more overnight batch jobs.
+  </Card>
+  <Card title="Event Sourcing" icon="timeline">
+    Store every state change as an immutable event log and derive current state by replaying it — giving you a full audit trail and time-travel debugging.
+  </Card>
+  <Card title="Log Aggregation" icon="layer-group">
+    Centralize logs and operational events from hundreds of services into a single, queryable stream for monitoring and alerting.
+  </Card>
+  <Card title="Microservices Messaging" icon="network-wired">
+    Decouple your microservices with an event bus that lets each service evolve independently without synchronous dependencies.
+  </Card>
+  <Card title="Change Data Capture" icon="database">
+    Stream every row-level change from your database to downstream consumers the moment it happens — replicate, sync, and react in real time.
+  </Card>
+  <Card title="Stream Processing" icon="wave-sine">
+    Transform, aggregate, enrich, and join streams of events as they flow through your system using Kafka Streams or ksqlDB.
+  </Card>
+</CardGroup>
+
+---
+
+## Real-Time Analytics
+
+### The Problem
+
+Traditional analytics stacks are built around batch ETL: data is extracted from operational databases on a schedule (often nightly), transformed, and loaded into a data warehouse. By the time analysts can query it, the data is hours or days old. For use cases like fraud detection, personalization, operational dashboards, or SLA monitoring, that lag is unacceptable.
+
+### How Kafka Solves It
+
+Kafka acts as the real-time transport layer between your operational systems and your analytics infrastructure. Every event — a page view, a transaction, a sensor reading — is written to Kafka the moment it happens. Analytics consumers read from Kafka with latency measured in milliseconds, enabling dashboards that reflect the current state of the world and alerting systems that fire in near-real time.
+
+### Architecture
+
+```
+Application Servers
+        │
+        ▼
+  Kafka Topic: events
+        │
+   ┌────┴─────┐
+   ▼          ▼
+ClickHouse   Flink / Kafka Streams
+(OLAP)       (Aggregation & Enrichment)
+   │                │
+   ▼                ▼
+Dashboard       Alert Engine
+```
+
+### Real-World Example
+
+**LinkedIn** was one of Kafka's earliest production users for exactly this pattern. LinkedIn uses Kafka to stream member activity events — profile views, search queries, job applications — into real-time analytics pipelines that power the "Who Viewed Your Profile" feature and the platform's recommendation engine. Events flow from production services into Kafka topics, through stream processors that compute aggregations, and finally into low-latency serving layers — all within seconds of the original user action.
+
+---
+
+## Event Sourcing
+
+### The Problem
+
+In traditional application architecture, a database stores the *current state* of an entity — a user's account balance, an order's status, an inventory count. When state changes, the old value is overwritten. This makes it impossible to answer questions like "what was this entity's state at a specific point in the past?" or "exactly what sequence of changes led to this state?" Debugging production issues and auditing state transitions become guesswork.
+
+### How Kafka Solves It
+
+In an event-sourced architecture, your Kafka topic is the system of record — not a relational database table. Every change to an entity is written as an immutable, timestamped event: `AccountOpened`, `FundsDeposited`, `WithdrawalMade`, `AccountClosed`. Current state is computed by replaying the event log from the beginning. Kafka's retention and replay capabilities make it a natural fit for the event store role.
+
+### Architecture
+
+```
+Command Handler
+      │
+      ▼  (write domain events)
+Kafka Topic: account-events
+      │
+  ┌───┴───┐
+  ▼       ▼
+Projection  Audit Log
+(current    (immutable
+ state DB)   history)
+```
+
+### Real-World Example
+
+**Axel Springer** (one of Europe's largest media companies) rebuilt its subscription management system around event sourcing on Kafka. Every action a subscriber takes — signing up, upgrading, pausing, cancelling — is an event appended to a Kafka topic. The current subscription state is a projection derived from those events. When a bug was introduced that incorrectly calculated subscription expiry dates, the engineering team was able to replay the event log against a patched projection to correct all affected accounts retroactively — something that would have been impossible with a traditional mutable database design.
+
+<Note>
+  Event sourcing on Kafka works best when paired with a Schema Registry to manage schema evolution. As your domain model grows and event shapes change, the registry enforces compatibility rules that keep old events readable alongside new ones.
+</Note>
+
+---
+
+## Log Aggregation
+
+### The Problem
+
+In a microservices or distributed system, application logs are scattered across dozens or hundreds of hosts and containers. Debugging a production incident requires SSHing into individual machines or stitching together logs from multiple sources manually — a slow, error-prone process. Aggregating logs via file-based pipelines (like Logstash writing to Elasticsearch) introduces fragility and often can't keep up with log volume spikes.
+
+### How Kafka Solves It
+
+Kafka serves as a high-throughput, durable buffer between log producers (your applications) and log consumers (Elasticsearch, Splunk, S3, your on-call dashboard). A lightweight log shipper like Filebeat or Fluent Bit tails log files and writes records to Kafka topics. Downstream consumers can then process, route, and store those logs without any coupling to the applications that produced them. If a downstream consumer is slow or temporarily unavailable, Kafka's retention means no logs are lost.
+
+### Architecture
+
+```
+Service A ─── Filebeat ──┐
+Service B ─── Filebeat ──┼──► Kafka Topic: app-logs ──► Logstash ──► Elasticsearch
+Service C ─── Filebeat ──┘                          │
+                                                    └──► S3 (archival)
+```
+
+### Real-World Example
+
+**Netflix** uses Kafka as the central nervous system for its observability platform. Thousands of microservices emit structured log and metric events into Kafka. Stream processors perform real-time anomaly detection and trigger alerts when error rates or latency percentiles breach thresholds. Raw events are simultaneously archived to S3 for long-term analysis. This design allows Netflix to scale its logging infrastructure horizontally simply by adding Kafka partitions and consumer instances — without any changes to the applications producing logs.
+
+---
+
+## Microservices Messaging
+
+### The Problem
+
+Microservices communicate. When you replace synchronous REST or gRPC calls with direct service-to-service calls, you introduce temporal coupling: Service A cannot complete its work if Service B is slow or unavailable. As your system grows to dozens of services, the blast radius of any single failure expands and the web of point-to-point connections becomes a maintenance nightmare.
+
+### How Kafka Solves It
+
+Kafka acts as an asynchronous event bus between your services. Service A publishes an event to a Kafka topic and returns immediately — it doesn't wait for downstream services to respond. Services B, C, and D subscribe to that topic independently and process events at their own pace. If Service B is redeployed or temporarily unhealthy, its consumers simply pause and resume without any impact on Service A or the other consumers.
+
+### Architecture
+
+```
+Order Service ──► Kafka: order-placed ──┬──► Inventory Service
+                                        ├──► Notification Service
+                                        ├──► Fraud Detection Service
+                                        └──► Analytics Service
+```
+
+### Real-World Example
+
+**Uber** rebuilt its dispatch and trip-lifecycle systems around Kafka-based event streaming. When a rider requests a trip, an event is published to Kafka. Dozens of downstream services — driver matching, ETA calculation, surge pricing, safety monitoring, billing — each consume that event independently. This architecture let Uber's engineering teams deploy and scale each service independently, reducing cross-team coordination overhead and enabling the platform to handle millions of concurrent trips globally.
+
+<Warning>
+  Asynchronous event-driven communication introduces eventual consistency: after Service A publishes an event, Service B's state won't reflect it immediately. Design your system to handle the window of inconsistency gracefully — for example, by checking Kafka consumer lag in health checks and communicating expected consistency boundaries to users.
+</Warning>
+
+---
+
+## Change Data Capture
+
+### The Problem
+
+Operational databases store your most important data, but that data often needs to be available in other systems: a search index, a data warehouse, a cache, a downstream microservice's own database. The traditional approach — writing to the database and also calling a downstream API — is fragile, and batch exports are slow. What you really want is for every change to a database row to be automatically propagated to interested consumers in real time.
+
+### How Kafka Solves It
+
+Change Data Capture (CDC) with Kafka Connect reads your database's replication log (the binary log in MySQL, the WAL in PostgreSQL) and converts every insert, update, and delete into a Kafka event. The Debezium Kafka Connect source connector is the most widely used tool for this. Downstream consumers then subscribe to the CDC topic and react to changes — no polling, no batch jobs, sub-second latency from the database change to the downstream system.
+
+### Architecture
+
+```
+PostgreSQL (WAL)
+      │
+      ▼
+Debezium Connector (Kafka Connect)
+      │
+      ▼
+Kafka Topic: postgres.public.orders
+      │
+  ┌───┴────────────┐
+  ▼                ▼
+Elasticsearch    Data Warehouse
+(search index)   (Snowflake / BigQuery)
+```
+
+### Real-World Example
+
+**Shopify** uses CDC with Kafka to keep its search infrastructure in sync with its primary database in near-real time. When a merchant updates a product listing — changing a price, adding a variant, updating inventory — a CDC event flows through Kafka to the search indexing pipeline within seconds. This replaced a polling-based architecture that struggled to keep up with Shopify's scale and introduced multi-minute delays between a merchant's update and the change appearing in search results.
+
+---
+
+## Stream Processing
+
+### The Problem
+
+Raw event streams are often not directly useful — you need to transform, enrich, filter, aggregate, or join them before the data has business value. Building these transformations as batch jobs adds latency. Building them as custom stateful services is complex and error-prone.
+
+### How Kafka Solves It
+
+Kafka Streams and ksqlDB provide a rich set of stream processing primitives that operate directly on data in Kafka topics. You can filter events, rekey them for repartitioning, enrich them by joining against a reference table, aggregate them into time windows, and write the results to a new Kafka topic — all within a fault-tolerant, exactly-once processing framework. Kafka Streams applications are ordinary Java processes that you deploy and scale like any other microservice.
+
+### Architecture
+
+```
+Kafka: raw-clicks (high volume, unfiltered)
+        │
+        ▼
+  Kafka Streams Application
+  ├── filter: remove bot traffic
+  ├── enrich: join with user-profile table
+  └── aggregate: count clicks per product per 5-minute window
+        │
+        ▼
+Kafka: enriched-click-aggregates
+        │
+        ▼
+    Dashboard / Alert Engine
+```
+
+### Real-World Example
+
+**Zalando**, Europe's largest online fashion platform, uses Kafka Streams for real-time inventory management. As orders are placed and items are picked in warehouses, Kafka Streams applications continuously aggregate available stock per SKU per warehouse, detect low-stock conditions, and trigger replenishment events — all in real time. The same raw event stream that feeds inventory management is also consumed by the fraud detection pipeline and the customer-facing order tracking feature, demonstrating the fan-out power of the Kafka model.
+
+---
+
+## Choosing Kafka for Your Use Case
+
+Use this checklist to evaluate whether Kafka is the right fit for what you're building. The more boxes you check, the stronger the case for Kafka.
+
+<Accordion title="Checklist: Is Kafka Right for Your Use Case?">
+
+**Data volume and velocity**
+- [ ] You expect sustained throughput of thousands to millions of events per second
+- [ ] Your data volume will grow significantly over the next 12–24 months
+- [ ] You need to handle bursty traffic without dropping events
+
+**Consumer patterns**
+- [ ] Multiple independent systems need to consume the same stream of events
+- [ ] Different consumers need to process events at different speeds
+- [ ] You need to add new consumers in the future without modifying producers
+
+**Durability and replay**
+- [ ] You need events to survive consumer failures and be re-processable
+- [ ] You want an audit trail of everything that happened in a domain
+- [ ] You may need to backfill a new system with historical data
+
+**Decoupling**
+- [ ] You want producers and consumers to deploy and scale independently
+- [ ] You want to avoid synchronous dependencies between services
+- [ ] You expect the set of downstream consumers to change over time
+
+**Operational fit**
+- [ ] Your team has (or is willing to build) expertise in distributed systems operations
+- [ ] You can commit to the infrastructure investment of running a Kafka cluster (or using a managed service)
+- [ ] Eventual consistency is an acceptable trade-off for the decoupling benefits
+
+</Accordion>
+
+<Tip>
+  If you're not ready to operate Kafka yourself, consider a fully managed service like Confluent Cloud, Amazon MSK, or Aiven for Kafka. You get all of Kafka's capabilities without the operational overhead of running brokers, managing ZooKeeper or KRaft quorums, and handling upgrades yourself.
+</Tip>

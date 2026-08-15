@@ -1,0 +1,184 @@
+---
+title: "Create Your First Kafka Topic with Examples"
+sidebarTitle: "First Topic"
+description: "Learn how to create, describe, list, and delete Kafka topics using kafka-topics.sh. Understand partitions, replication factor, and topic configurations."
+---
+
+Topics are the fundamental unit of organization in Kafka — every message you produce goes into a topic, and every consumer reads from one. A topic is a named, ordered, and durable log that can be partitioned across multiple brokers and replicated for fault tolerance. This guide walks you through creating and managing topics using the `kafka-topics.sh` command-line tool that ships with every Kafka installation.
+
+## Creating a Topic
+
+To create a topic, use the `--create` subcommand with `kafka-topics.sh`. The example below creates a topic named `my-first-topic` with three partitions and a replication factor of one — appropriate for a single-node development cluster.
+
+```bash
+bin/kafka-topics.sh --create \
+  --topic my-first-topic \
+  --partitions 3 \
+  --replication-factor 1 \
+  --bootstrap-server localhost:9092
+```
+
+When the command succeeds, Kafka prints:
+
+```
+Created topic my-first-topic.
+```
+
+### Flag Reference
+
+<ParamField path="--topic" type="string" required>
+  The name of the topic to create. Topic names may contain letters, numbers, dots (`.`), underscores (`_`), and hyphens (`-`). Names are case-sensitive and must be unique within a cluster.
+</ParamField>
+
+<ParamField path="--partitions" type="integer" required>
+  The number of partitions to create for this topic. More partitions allow higher throughput by enabling parallel reads and writes, but also increase the overhead on the broker and ZooKeeper/KRaft controller. A good starting point for development is `1`–`3`; production topics often use `6`, `12`, or more depending on throughput requirements.
+</ParamField>
+
+<ParamField path="--replication-factor" type="integer" required>
+  How many copies of each partition to maintain across brokers. A replication factor of `1` means there is no redundancy — if the broker goes down, the data is unavailable. For production use, set this to at least `2` (or `3` for critical topics). The replication factor cannot exceed the number of brokers in your cluster.
+</ParamField>
+
+<ParamField path="--bootstrap-server" type="string" required>
+  The `host:port` of any broker in your cluster. Kafka uses this address to discover the full cluster topology. For a local single-node setup this is always `localhost:9092`.
+</ParamField>
+
+<Tip>
+**Topic naming conventions** — adopt a consistent naming scheme from the start to keep your cluster manageable:
+- Use **kebab-case** (e.g., `order-placed`, `user-signup-events`).
+- Include an **environment prefix** for multi-environment clusters (e.g., `prod.payments.transactions`, `dev.payments.transactions`).
+- Avoid dots (`.`) if you also use underscores (`_`) in the same cluster — Kafka internally converts dots to underscores in certain metric names, which can cause collisions.
+</Tip>
+
+## Listing Topics
+
+To see all topics currently present in the cluster, use the `--list` subcommand:
+
+```bash
+bin/kafka-topics.sh --list --bootstrap-server localhost:9092
+```
+
+The output is a plain newline-separated list of topic names:
+
+```
+my-first-topic
+quickstart-events
+```
+
+Internal topics (those prefixed with `__`, such as `__consumer_offsets`) are hidden by default. Add `--exclude-internal` explicitly if you want to filter them from custom `--list` output in scripts.
+
+## Describing a Topic
+
+The `--describe` subcommand returns detailed metadata about one or more topics, including the partition layout and which broker is the current leader for each partition.
+
+```bash
+bin/kafka-topics.sh --describe \
+  --topic my-first-topic \
+  --bootstrap-server localhost:9092
+```
+
+Example output:
+
+```
+Topic: my-first-topic   TopicId: AbCdEfGhIjKlMnOpQrStUv  PartitionCount: 3  ReplicationFactor: 1  Configs: segment.bytes=1073741824
+  Topic: my-first-topic  Partition: 0  Leader: 1  Replicas: 1  Isr: 1
+  Topic: my-first-topic  Partition: 1  Leader: 1  Replicas: 1  Isr: 1
+  Topic: my-first-topic  Partition: 2  Leader: 1  Replicas: 1  Isr: 1
+```
+
+| Field | Meaning |
+|-------|---------|
+| `PartitionCount` | Total number of partitions for this topic. |
+| `ReplicationFactor` | Number of replicas per partition. |
+| `Configs` | Any topic-level configuration overrides (empty means broker defaults apply). |
+| `Partition` | The zero-indexed partition number. |
+| `Leader` | The broker ID currently acting as the leader for this partition. All reads and writes go through the leader. |
+| `Replicas` | Comma-separated list of broker IDs that hold a copy of this partition. |
+| `Isr` | **In-Sync Replicas** — the subset of `Replicas` that are fully caught up with the leader. Healthy topics have `Isr` equal to `Replicas`. |
+
+## Topic Configuration
+
+You can apply per-topic configuration overrides at creation time using the `--config` flag. These override the broker-level defaults for this topic only.
+
+```bash
+# Create a topic with a 1-hour retention window and compaction enabled
+bin/kafka-topics.sh --create \
+  --topic short-lived-events \
+  --partitions 3 \
+  --replication-factor 1 \
+  --bootstrap-server localhost:9092 \
+  --config retention.ms=3600000 \
+  --config cleanup.policy=delete
+```
+
+```bash
+# Create a compacted topic (keeps only the latest value per key)
+bin/kafka-topics.sh --create \
+  --topic user-profiles \
+  --partitions 6 \
+  --replication-factor 1 \
+  --bootstrap-server localhost:9092 \
+  --config cleanup.policy=compact
+```
+
+Some commonly used topic-level configurations:
+
+| Config Key | Default | Description |
+|------------|---------|-------------|
+| `retention.ms` | `604800000` (7 days) | How long Kafka retains messages before deleting them. Set to `-1` for infinite retention. |
+| `retention.bytes` | `-1` (unlimited) | Maximum total size of all log segments for a partition before old segments are deleted. |
+| `cleanup.policy` | `delete` | `delete` removes old segments by time/size. `compact` retains only the latest value per message key. |
+| `segment.bytes` | `1073741824` (1 GB) | Maximum size of a single log segment file. |
+| `max.message.bytes` | `1048588` (~1 MB) | Maximum size of a single message. Increase this if your payloads are large. |
+| `min.insync.replicas` | `1` | Minimum number of in-sync replicas required for a produce request with `acks=all` to succeed. |
+
+## Altering a Topic
+
+You can change a topic's partition count or configuration after creation using `--alter`.
+
+### Increasing partitions
+
+```bash
+bin/kafka-topics.sh --alter \
+  --topic my-first-topic \
+  --partitions 6 \
+  --bootstrap-server localhost:9092
+```
+
+<Warning>
+**You can only increase the partition count — never decrease it.** Decreasing partitions would require redistributing or deleting data already assigned to those partitions, which Kafka does not support. If you need fewer partitions, delete the topic and recreate it.
+</Warning>
+
+### Changing a configuration value
+
+Use `kafka-configs.sh` (not `kafka-topics.sh`) to modify configuration after creation:
+
+```bash
+# Increase retention to 30 days
+bin/kafka-configs.sh --alter \
+  --entity-type topics \
+  --entity-name my-first-topic \
+  --add-config retention.ms=2592000000 \
+  --bootstrap-server localhost:9092
+```
+
+## Deleting a Topic
+
+To permanently remove a topic and all of its data:
+
+```bash
+bin/kafka-topics.sh --delete \
+  --topic my-first-topic \
+  --bootstrap-server localhost:9092
+```
+
+<Note>
+**Deleting a topic is permanent — all messages stored in that topic are gone and cannot be recovered.** Make sure you have processed or backed up any data you need before deleting. In production clusters, consider restricting the `delete.topic.enable` broker setting and managing topic lifecycle through an administrative process.
+</Note>
+
+Verify the topic has been removed:
+
+```bash
+bin/kafka-topics.sh --list --bootstrap-server localhost:9092
+```
+
+The topic should no longer appear in the list.

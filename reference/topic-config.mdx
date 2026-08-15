@@ -1,0 +1,102 @@
+---
+title: "Kafka Topic Configuration Reference"
+sidebarTitle: "Topic Config"
+description: "Reference for per-topic configuration overrides in Apache Kafka. Covers retention, compaction, replication, compression, and quotas with CLI examples."
+---
+
+Kafka's broker-level properties set cluster-wide defaults for every topic, but you can override almost any storage or retention policy on a per-topic basis. Topic-level configuration overrides are stored in the cluster metadata (ZooKeeper or KRaft) rather than in `server.properties`, so they survive broker restarts and take effect without restarting any broker. This makes them the right tool whenever different topics in the same cluster have different durability, retention, or performance requirements.
+
+## Managing Topic Configurations
+
+You use the `kafka-topics.sh` and `kafka-configs.sh` scripts to set, inspect, and remove topic-level configuration overrides from the command line.
+
+```bash
+# Set config at topic creation time
+bin/kafka-topics.sh --create --topic my-topic \
+  --config retention.ms=86400000 \
+  --config min.insync.replicas=2 \
+  --bootstrap-server localhost:9092
+
+# Alter an existing topic's configuration
+bin/kafka-configs.sh --bootstrap-server localhost:9092 \
+  --alter --entity-type topics --entity-name my-topic \
+  --add-config retention.ms=86400000
+
+# Describe all configuration overrides for a topic
+bin/kafka-configs.sh --bootstrap-server localhost:9092 \
+  --describe --entity-type topics --entity-name my-topic
+
+# Delete a config override (reverts the property to the broker default)
+bin/kafka-configs.sh --bootstrap-server localhost:9092 \
+  --alter --entity-type topics --entity-name my-topic \
+  --delete-config retention.ms
+```
+
+<Note>
+  The `--describe` command only shows **overrides** — properties that differ from the broker default. If you want to see effective values including inherited defaults, add the `--all` flag (Kafka 2.6+).
+</Note>
+
+## Configuration Reference
+
+<AccordionGroup>
+
+  <Accordion title="Retention">
+    Retention settings control how long Kafka keeps messages and how much disk space a topic is allowed to consume.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `retention.ms` | `604800000` | How long messages are retained in milliseconds (7 days). Set to `-1` for infinite retention. Overrides the broker's `log.retention.ms`. |
+    | `retention.bytes` | `-1` | Maximum total size of all log segments per partition before old segments are deleted. `-1` means unlimited. |
+    | `cleanup.policy` | `delete` | Controls how old data is removed. Use `delete` for time/size-based removal, `compact` for log compaction, or `delete,compact` to apply both policies simultaneously. |
+
+    <Tip>
+      For event-sourcing or CDC (change data capture) topics where you need the full history of a key's values, use `cleanup.policy=compact`. For ephemeral event streams, `delete` with a reasonable `retention.ms` is usually the right choice.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="Compaction">
+    These settings fine-tune the log compaction process, which retains only the latest value for each key in a topic.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `min.cleanable.dirty.ratio` | `0.5` | Minimum ratio of dirty (uncompacted) log to total log size that triggers the log cleaner. Lower values mean more frequent compaction at the cost of higher I/O. |
+    | `min.compaction.lag.ms` | `0` | Minimum time a message will remain uncompacted after it is written. Allows consumers time to see every version of a key's value before compaction removes older ones. |
+    | `max.compaction.lag.ms` | `Long.MAX_VALUE` | Maximum time before a message must be compacted. Guarantees a compaction SLA even when the dirty ratio threshold is not met. |
+    | `delete.retention.ms` | `86400000` | How long delete tombstone markers (null-value records) are retained before being fully removed during compaction (1 day). Consumers must read within this window to observe deletes. |
+
+    <Warning>
+      Compacted topics are not appropriate for use cases where you need to replay the full sequence of events. Compaction removes intermediate values, leaving only the most recent value per key.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Replication">
+    These settings control how durably a topic's data is replicated across brokers.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `replication.factor` | Broker default | Number of replicas for this topic's partitions. Can only be set at topic creation time via `kafka-topics.sh`. To change it afterwards, use `kafka-reassign-partitions.sh`. |
+    | `min.insync.replicas` | `1` | Minimum number of ISR replicas that must acknowledge a write when the producer uses `acks=all`. If fewer replicas are in sync, the broker rejects the write with `NotEnoughReplicasException`. |
+    | `unclean.leader.election.enable` | `false` | When `true`, allows an out-of-sync replica to be elected as the partition leader, recovering availability at the risk of data loss. |
+
+    <Warning>
+      Setting `unclean.leader.election.enable=true` at the topic level overrides the broker-wide setting and can cause data loss for that topic. Only consider enabling it for topics where availability is more important than durability.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Storage & Performance">
+    These settings control segment file sizes, compression, and message size limits for a topic.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `segment.bytes` | `1073741824` | Size at which the current log segment is closed and a new one is opened (1 GB). Smaller segments allow more granular retention and faster log compaction. |
+    | `segment.ms` | `604800000` | Maximum time before a new log segment is opened, even if `segment.bytes` has not been reached (7 days). |
+    | `compression.type` | `producer` | Compression applied to message batches stored on disk. `producer` preserves the compression chosen by the producer. Other valid values: `none`, `gzip`, `snappy`, `lz4`, `zstd`. |
+    | `max.message.bytes` | `1048588` | Maximum size of a record batch the broker will accept for this topic (~1 MB). Producers sending larger batches will receive a `RecordTooLargeException`. |
+    | `message.timestamp.type` | `CreateTime` | Determines which timestamp is stored with each record. `CreateTime` uses the timestamp set by the producer; `LogAppendTime` overwrites it with the broker's local time at ingestion. |
+
+    <Info>
+      When you change `compression.type` on an existing topic, the change only applies to newly written batches. Existing segments on disk retain their original compression (or lack thereof) until they are deleted or compacted.
+    </Info>
+  </Accordion>
+
+</AccordionGroup>

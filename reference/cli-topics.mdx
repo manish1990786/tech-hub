@@ -1,0 +1,297 @@
+---
+title: "kafka-topics.sh and kafka-configs.sh Reference"
+sidebarTitle: "Topics CLI"
+description: "Full reference for kafka-topics.sh and kafka-configs.sh. Create, list, describe, delete topics and manage dynamic configuration overrides from the command line."
+---
+
+Three CLI tools cover the vast majority of Kafka administrative work: `kafka-topics.sh` for managing topic structure, `kafka-consumer-groups.sh` for inspecting and resetting consumer positions, and `kafka-configs.sh` for reading and writing dynamic configuration overrides. This page walks through every major subcommand for each tool with practical, copy-paste-ready examples.
+
+---
+
+## kafka-topics.sh
+
+`kafka-topics.sh` is the primary tool for creating and managing topics. All operations connect directly to the broker via `--bootstrap-server`.
+
+### Create a Topic
+
+```bash
+bin/kafka-topics.sh --create \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --partitions 6 \
+  --replication-factor 3 \
+  --config retention.ms=86400000 \
+  --config min.insync.replicas=2
+```
+
+<Note>
+  You can pass multiple `--config key=value` pairs at creation time. These become per-topic overrides stored in cluster metadata.
+</Note>
+
+### List All Topics
+
+```bash
+bin/kafka-topics.sh --list \
+  --bootstrap-server localhost:9092
+```
+
+Add `--exclude-internal` to hide internal topics like `__consumer_offsets` and `__transaction_state`:
+
+```bash
+bin/kafka-topics.sh --list \
+  --bootstrap-server localhost:9092 \
+  --exclude-internal
+```
+
+### Describe a Topic
+
+```bash
+bin/kafka-topics.sh --describe \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic
+```
+
+Sample output:
+
+```
+Topic: my-topic   PartitionCount: 6   ReplicationFactor: 3   Configs: retention.ms=86400000
+  Topic: my-topic   Partition: 0   Leader: 1   Replicas: 1,2,3   Isr: 1,2,3
+  Topic: my-topic   Partition: 1   Leader: 2   Replicas: 2,3,1   Isr: 2,3,1
+  ...
+```
+
+### Delete a Topic
+
+```bash
+bin/kafka-topics.sh --delete \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic
+```
+
+<Warning>
+  Topic deletion is immediate and irreversible. All data stored in the topic is permanently removed. Make sure you have confirmed the correct topic name before running this command.
+</Warning>
+
+### Increase Partition Count
+
+You can increase the number of partitions for an existing topic, but you cannot decrease it.
+
+```bash
+bin/kafka-topics.sh --alter \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --partitions 12
+```
+
+<Warning>
+  Increasing partitions changes the mapping of keys to partitions for new messages. If your producers rely on key-based partitioning to guarantee ordering, existing consumers may see records for the same key on different partitions after the change.
+</Warning>
+
+### Find Under-Replicated Partitions
+
+Use this to quickly identify partitions where one or more replicas have fallen behind or gone offline:
+
+```bash
+bin/kafka-topics.sh --describe \
+  --bootstrap-server localhost:9092 \
+  --under-replicated-partitions
+```
+
+An empty output means all replicas are fully in sync — a healthy cluster.
+
+### Find Unavailable Partitions
+
+Partitions without a live leader are unavailable for reads and writes:
+
+```bash
+bin/kafka-topics.sh --describe \
+  --bootstrap-server localhost:9092 \
+  --unavailable-partitions
+```
+
+<Warning>
+  Any output from this command means producers are receiving errors and consumers cannot make progress on those partitions. Investigate broker health immediately.
+</Warning>
+
+---
+
+## kafka-consumer-groups.sh
+
+`kafka-consumer-groups.sh` lets you inspect consumer group state, measure consumer lag, move offsets, and clean up stale groups.
+
+### List All Consumer Groups
+
+```bash
+bin/kafka-consumer-groups.sh --list \
+  --bootstrap-server localhost:9092
+```
+
+### Describe a Consumer Group
+
+This is the most useful command for diagnosing consumer lag. It shows the current offset, end offset, and lag for each partition assigned to the group:
+
+```bash
+bin/kafka-consumer-groups.sh --describe \
+  --bootstrap-server localhost:9092 \
+  --group my-consumer-group
+```
+
+Sample output:
+
+```
+GROUP               TOPIC      PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG  CONSUMER-ID
+my-consumer-group   my-topic   0          1042            1042            0    consumer-1
+my-consumer-group   my-topic   1          978             990             12   consumer-2
+```
+
+<Tip>
+  A non-zero LAG column means consumers are falling behind. If lag is growing over time, your consumers are processing records more slowly than they are being produced. Consider scaling out the consumer group or optimising your processing logic.
+</Tip>
+
+### Delete a Consumer Group
+
+You can only delete a group that has no active members (all consumers are stopped):
+
+```bash
+bin/kafka-consumer-groups.sh --delete \
+  --bootstrap-server localhost:9092 \
+  --group my-consumer-group
+```
+
+### Reset Offsets
+
+Offset resets let you replay messages or skip ahead. Use `--dry-run` first to preview the effect before committing:
+
+<Tabs>
+  <Tab title="Reset to Earliest">
+    ```bash
+    # Preview
+    bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+      --group my-consumer-group \
+      --topic my-topic \
+      --reset-offsets --to-earliest --dry-run
+
+    # Execute
+    bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+      --group my-consumer-group \
+      --topic my-topic \
+      --reset-offsets --to-earliest --execute
+    ```
+  </Tab>
+  <Tab title="Reset to Latest">
+    ```bash
+    bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+      --group my-consumer-group \
+      --topic my-topic \
+      --reset-offsets --to-latest --execute
+    ```
+  </Tab>
+  <Tab title="Reset to Datetime">
+    ```bash
+    # ISO 8601 datetime — resets to the first offset at or after this time
+    bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+      --group my-consumer-group \
+      --topic my-topic \
+      --reset-offsets --to-datetime 2024-01-15T00:00:00.000 --execute
+    ```
+  </Tab>
+  <Tab title="Shift by Delta">
+    ```bash
+    # Shift offsets backwards by 1000 records per partition
+    bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+      --group my-consumer-group \
+      --topic my-topic \
+      --reset-offsets --shift-by -1000 --execute
+    ```
+  </Tab>
+  <Tab title="All Topics in Group">
+    ```bash
+    # Reset offsets for every topic consumed by this group
+    bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+      --group my-consumer-group \
+      --all-topics \
+      --reset-offsets --to-earliest --execute
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  All members of the consumer group **must be stopped** before running `--execute` on a reset. Running a reset while consumers are active will result in an error or undefined behaviour depending on the Kafka version.
+</Warning>
+
+### Delete Offsets
+
+Removes the committed offset for a specific topic-partition without deleting the group itself:
+
+```bash
+bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+  --group my-consumer-group \
+  --topic my-topic \
+  --delete-offsets
+```
+
+---
+
+## kafka-configs.sh
+
+`kafka-configs.sh` reads and writes dynamic configuration for topics, brokers, clients, and users — without restarting anything.
+
+### Describe Topic Configuration Overrides
+
+```bash
+bin/kafka-configs.sh --bootstrap-server localhost:9092 \
+  --describe --entity-type topics --entity-name my-topic
+```
+
+To see all effective configuration values including broker defaults (Kafka 2.6+):
+
+```bash
+bin/kafka-configs.sh --bootstrap-server localhost:9092 \
+  --describe --entity-type topics --entity-name my-topic --all
+```
+
+### Add or Update a Topic Config Override
+
+```bash
+bin/kafka-configs.sh --bootstrap-server localhost:9092 \
+  --alter --entity-type topics --entity-name my-topic \
+  --add-config retention.ms=86400000,max.message.bytes=2097152
+```
+
+### Delete a Topic Config Override
+
+Deleting a config override reverts that property to the broker-wide default:
+
+```bash
+bin/kafka-configs.sh --bootstrap-server localhost:9092 \
+  --alter --entity-type topics --entity-name my-topic \
+  --delete-config retention.ms
+```
+
+### Describe Broker Configuration
+
+Read dynamic broker configuration (properties set via `kafka-configs.sh`, not `server.properties`):
+
+```bash
+# Describe overrides for a specific broker
+bin/kafka-configs.sh --bootstrap-server localhost:9092 \
+  --describe --entity-type brokers --entity-id 1
+
+# Describe cluster-wide (default) broker overrides
+bin/kafka-configs.sh --bootstrap-server localhost:9092 \
+  --describe --entity-type brokers --entity-default
+```
+
+### Set a Dynamic Broker Config
+
+Some broker properties can be changed at runtime without a restart. For example, to change the log retention period cluster-wide:
+
+```bash
+bin/kafka-configs.sh --bootstrap-server localhost:9092 \
+  --alter --entity-type brokers --entity-default \
+  --add-config log.retention.ms=604800000
+```
+
+<Note>
+  Not all broker properties are dynamically reconfigurable. Check the Kafka documentation for a property's `Update Mode` — only properties marked `dynamic` or `per-broker` can be changed without restarting the broker.
+</Note>

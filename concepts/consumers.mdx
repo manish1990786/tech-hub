@@ -1,0 +1,255 @@
+---
+title: "Kafka Consumers: Reading Messages from Topics"
+sidebarTitle: "Consumers"
+description: "Learn how Kafka consumers subscribe to topics and read messages. Covers poll loop, offset management, auto-commit, manual commit, and consumer groups."
+---
+
+A Kafka **consumer** is a client application that subscribes to one or more topics and reads the records that producers have published. Unlike traditional message queues where a message is removed once consumed, Kafka retains messages in the log regardless of how many consumers have read them. Each consumer tracks its own position in the log independently, making Kafka ideal for building multiple independent pipelines over the same stream of data.
+
+## The Poll Loop
+
+The core pattern of every Kafka consumer is the **poll loop**. Your consumer calls `poll()` repeatedly in a loop, processes the returned batch of records, and then commits its progress. This loop continues until you stop the application.
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                      Consumer Poll Loop                  │
+│                                                          │
+│   subscribe(topics)                                      │
+│         │                                                │
+│         ▼                                                │
+│   ┌─────────────┐   records available                    │
+│   │   poll()    │ ─────────────────────► process records │
+│   └─────────────┘                              │         │
+│         ▲                                      │         │
+│         │          commit offsets ◄────────────┘         │
+│         └──────────────────────────────────────          │
+└──────────────────────────────────────────────────────────┘
+```
+
+The `poll(Duration timeout)` call does several things at once: it fetches new records from the broker, sends heartbeats to the group coordinator (keeping the consumer alive in its group), and triggers partition rebalance handling. The `timeout` parameter is how long `poll()` will block waiting for records if none are immediately available — it is not a processing deadline.
+
+<Note>
+  You must call `poll()` frequently enough that the consumer sends heartbeats to the broker within the `max.poll.interval.ms` window (default: 5 minutes). If your processing logic is slow and you exceed this interval between `poll()` calls, the broker will assume the consumer is dead and trigger a rebalance.
+</Note>
+
+## Offsets
+
+Every record in a Kafka partition has a unique, monotonically increasing integer called an **offset**. Offsets are the consumer's bookmark — they tell Kafka exactly where in the partition the consumer is.
+
+- **Current offset** — The offset of the next record that `poll()` will return to your application.
+- **Committed offset** — The offset that has been saved to Kafka as "processed". This is the position a consumer will resume from after a restart or rebalance.
+
+Committed offsets are stored in a special internal Kafka topic called **`__consumer_offsets`**. This topic is managed automatically by Kafka and is replicated like any other topic for durability.
+
+```
+Partition 0:  [0]  [1]  [2]  [3]  [4]  [5]  [6]  [7]  [8]  ...
+                              ↑              ↑
+                    Committed Offset=3   Current Offset=6
+                    (last saved progress) (next to be returned by poll)
+```
+
+If the consumer crashes between offset 3 and offset 6, it will restart from offset 4 (the committed offset + 1) and re-process records 4 and 5. This is **at-least-once delivery** — messages may be processed more than once if the consumer crashes before committing.
+
+## Auto Commit vs Manual Commit
+
+Kafka gives you two approaches to managing offset commits: automatic and manual.
+
+<Tabs>
+  <Tab title="Auto Commit">
+    When `enable.auto.commit=true` (the default), the consumer commits offsets automatically at the interval set by `auto.commit.interval.ms` (default: 5000 ms / 5 seconds).
+
+    **Pros:** Zero boilerplate — you don't write any commit code.
+
+    **Cons:** The consumer commits the *last polled* offset, not necessarily the last *successfully processed* offset. If your application crashes after `poll()` returns records but before it processes them, those records will be skipped on restart because their offsets were already committed.
+
+    ```properties title="Auto-commit configuration"
+    enable.auto.commit=true
+    auto.commit.interval.ms=5000
+    ```
+
+    <Warning>
+      Auto-commit is fine for workloads that can tolerate occasional message loss or where re-processing is cheap. For critical data pipelines, disable auto-commit and manage commits manually.
+    </Warning>
+  </Tab>
+  <Tab title="Manual Commit (Sync)">
+    `commitSync()` commits the offsets of the last batch returned by `poll()` and **blocks** until the broker confirms the commit. It will retry automatically on retriable failures.
+
+    **Pros:** Strong durability guarantee — you know exactly when the offset is committed.
+
+    **Cons:** Blocking call adds latency to your poll loop. If the broker is slow or unavailable, your processing stalls.
+
+    ```java title="Manual commitSync"
+    while (true) {
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
+        for (ConsumerRecord<String, String> record : records) {
+            process(record); // your processing logic
+        }
+        // Commit only after all records in this batch are processed
+        consumer.commitSync();
+    }
+    ```
+  </Tab>
+  <Tab title="Manual Commit (Async)">
+    `commitAsync()` sends the commit request to the broker but **does not block**. It accepts a callback that fires when the commit completes (or fails). Unlike `commitSync()`, it does not retry automatically because a later commit may have already superseded it by the time the failure is detected.
+
+    **Pros:** Non-blocking — keeps your poll loop moving.
+
+    **Cons:** No automatic retry; occasional commit failures may require re-processing on restart.
+
+    ```java title="Manual commitAsync"
+    while (true) {
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
+        for (ConsumerRecord<String, String> record : records) {
+            process(record);
+        }
+        consumer.commitAsync((offsets, exception) -> {
+            if (exception != null) {
+                System.err.println("Commit failed for offsets: " + offsets);
+            }
+        });
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Consumer Groups
+
+Consumers are typically organized into **consumer groups**. Every consumer belongs to a group identified by the `group.id` configuration. Kafka ensures that each partition of a topic is assigned to **exactly one consumer** within the group at any given time.
+
+This design enables horizontal scaling: if a topic has 6 partitions and your consumer group has 3 consumers, each consumer handles 2 partitions. Add more consumers (up to the number of partitions) to increase throughput.
+
+<Card title="Consumer Groups Deep Dive" icon="users" href="/guides/consumer-groups">
+  Learn about group coordinators, rebalance protocols (eager vs cooperative), static membership, and multi-tenant consumption patterns.
+</Card>
+
+## Partition Assignment
+
+When consumers join a group, Kafka's **group coordinator** broker distributes the partitions among them. The assignment strategy is controlled by the `partition.assignment.strategy` configuration:
+
+| Strategy | Behavior |
+|---|---|
+| `RangeAssignor` (default) | Assigns contiguous partition ranges to each consumer. Can be uneven if partitions don't divide evenly. |
+| `RoundRobinAssignor` | Distributes partitions evenly in round-robin order. More balanced than Range. |
+| `StickyAssignor` | Minimizes partition movement during rebalances by keeping existing assignments where possible. |
+| `CooperativeStickyAssignor` | Like Sticky but uses the incremental cooperative rebalance protocol — consumers can keep processing during a rebalance. Recommended for production. |
+
+A **rebalance** is triggered whenever the group membership changes — a consumer joins, a consumer leaves, or a consumer is considered dead (missed heartbeat). During a rebalance (with the default eager protocol), all consumers stop consuming until the new partition assignment is complete. The cooperative protocol avoids this full stop.
+
+## Starting Position
+
+When a consumer group starts reading a topic for the first time (no committed offsets exist), or when it requests an offset that no longer exists in the log (it's been deleted by retention), Kafka uses the `auto.offset.reset` policy to decide where to start:
+
+| Value | Behavior |
+|---|---|
+| `latest` (default) | Start reading from the end of the log — only new messages published after the consumer started are consumed. |
+| `earliest` | Start reading from the beginning of the log — consume all retained historical messages first. |
+| `none` | Throw an exception if no committed offset exists for the consumer group. Use this when you want to enforce that consumers always have a prior commit. |
+
+## Full Java Consumer Example
+
+```java title="OrderConsumer.java"
+import org.apache.kafka.clients.consumer.*;
+import java.time.Duration;
+import java.util.Collections;
+import java.util.Properties;
+
+public class OrderConsumer {
+    public static void main(String[] args) {
+        Properties props = new Properties();
+
+        // Cluster connection
+        props.put("bootstrap.servers", "localhost:9092");
+
+        // All consumers sharing this group.id cooperate to read the topic
+        props.put("group.id", "order-processor");
+
+        // Deserializers must match the serializers used by the producer
+        props.put("key.deserializer",   "org.apache.kafka.common.serialization.StringDeserializer");
+        props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+
+        // Disable auto-commit — we will commit manually after processing
+        props.put("enable.auto.commit", "false");
+
+        // Start from the beginning if no committed offset exists for this group
+        props.put("auto.offset.reset", "earliest");
+
+        KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
+        consumer.subscribe(Collections.singletonList("orders"));
+
+        try {
+            while (true) {
+                // Block for up to 100 ms waiting for records
+                ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
+
+                for (ConsumerRecord<String, String> record : records) {
+                    System.out.printf(
+                        "offset=%d, partition=%d, key=%s, value=%s%n",
+                        record.offset(), record.partition(),
+                        record.key(), record.value()
+                    );
+                    // Your business logic goes here
+                }
+
+                // Commit after all records in this batch are processed
+                // commitSync() blocks until the broker confirms
+                consumer.commitSync();
+            }
+        } finally {
+            // close() commits the current offset and leaves the consumer group cleanly
+            consumer.close();
+        }
+    }
+}
+```
+
+## Python Consumer Example
+
+```python title="order_consumer.py"
+from confluent_kafka import Consumer, KafkaException
+
+consumer = Consumer({
+    "bootstrap.servers": "localhost:9092",
+
+    # All consumers sharing this group.id cooperate to read the topic
+    "group.id": "order-processor",
+
+    # Disable auto-commit — commit manually after processing
+    "enable.auto.commit": False,
+
+    # Start from the beginning if no committed offset exists
+    "auto.offset.reset": "earliest"
+})
+
+consumer.subscribe(["orders"])
+
+try:
+    while True:
+        # Block for up to 1 second waiting for a message
+        msg = consumer.poll(timeout=1.0)
+
+        if msg is None:
+            continue  # No message within the timeout window
+
+        if msg.error():
+            raise KafkaException(msg.error())
+
+        print(
+            f"offset={msg.offset()}, "
+            f"partition={msg.partition()}, "
+            f"key={msg.key().decode('utf-8')}, "
+            f"value={msg.value().decode('utf-8')}"
+        )
+
+        # Your business logic goes here
+
+        # Commit the offset for this message synchronously
+        consumer.commit(message=msg, asynchronous=False)
+
+finally:
+    # close() flushes any pending commits and leaves the group cleanly
+    consumer.close()
+```
+
+<Tip>
+  Always call `consumer.close()` — or wrap your poll loop in a try-finally block as shown above. Calling `close()` sends a "leave group" request to the coordinator, triggering an immediate rebalance so other consumers in the group can take over the partitions quickly. Without it, the group coordinator waits for the session timeout (default: 10 seconds) before detecting the missing consumer and starting a rebalance.
+</Tip>

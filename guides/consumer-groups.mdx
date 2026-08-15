@@ -1,0 +1,206 @@
+---
+title: "Kafka Consumer Groups: Parallel Processing and Load Balancing"
+sidebarTitle: "Consumer Groups"
+description: "Learn how Kafka consumer groups enable parallel message processing. Covers group coordination, partition assignment, lag monitoring, and offset reset strategies."
+---
+
+Consumer groups are Kafka's mechanism for scaling message consumption horizontally. By organising multiple consumer instances under a single group ID, Kafka automatically distributes the partitions of a topic across the group's members so that every partition is handled by exactly one consumer at a time. This design lets you scale throughput linearly by adding more consumer instances — without any coordination logic in your application code.
+
+## What Is a Consumer Group?
+
+A consumer group is a logical set of consumer instances that collaborate to read a topic. Each consumer in the group is assigned a non-overlapping subset of partitions. As a result, every message in a partition is processed by exactly one consumer within the group — providing a natural unit of parallel work.
+
+```
+                         Topic: "orders" (6 partitions)
+┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+│  P 0     │  │  P 1     │  │  P 2     │  │  P 3     │  │  P 4     │  │  P 5     │
+└────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘
+     │              │              │              │              │              │
+     ▼              ▼              ▼              ▼              ▼              ▼
+┌─────────────────────────┐  ┌─────────────────────────┐  ┌─────────────────────────┐
+│    Consumer A           │  │    Consumer B           │  │    Consumer C           │
+│  (P0, P1)               │  │  (P2, P3)               │  │  (P4, P5)               │
+└─────────────────────────┘  └─────────────────────────┘  └─────────────────────────┘
+                     Consumer Group: "order-processor"
+```
+
+Key rules of consumer groups:
+
+- One partition can be assigned to **at most one** consumer in a group at any given time.
+- One consumer can be assigned **many** partitions.
+- If there are more consumers than partitions, the extra consumers sit **idle** (but are ready to take over if another consumer fails).
+- Different consumer groups are completely independent — they each maintain their own committed offsets.
+
+## Group Coordinator
+
+Every consumer group has a designated **group coordinator** — a broker elected by hashing the group ID to a partition of the internal `__consumer_offsets` topic. The group coordinator is responsible for:
+
+- Accepting `JoinGroup` requests when consumers start up
+- Collecting partition assignment information from the group leader (the first consumer to join)
+- Distributing assignments back to all members via `SyncGroup` responses
+- Tracking liveness via the heartbeat protocol
+
+```
+Consumer A                   Group Coordinator Broker
+    │                                │
+    │── JoinGroup ──────────────────▶│  "I want to join order-processor"
+    │◀─ JoinGroup Response ──────────│  "You are the leader; here are the members"
+    │                                │
+    │── SyncGroup (with assignment) ─▶│  Leader sends the full partition assignment
+    │◀─ SyncGroup Response ──────────│  "Your assignment: P0, P1"
+    │                                │
+    │── Heartbeat (every 3s) ────────▶│  "I am alive"
+    │◀─ Heartbeat Response ───────────│  "OK" (or "REBALANCE_IN_PROGRESS")
+```
+
+The `session.timeout.ms` setting (default 45 s) is the maximum time the coordinator will wait for a heartbeat before declaring the consumer dead. The `heartbeat.interval.ms` setting (default 3 s) controls how frequently the consumer sends heartbeats — it should be roughly one-third of `session.timeout.ms`.
+
+## Scaling Consumer Groups
+
+The relationship between consumer count and partition count directly determines throughput and fault tolerance.
+
+### Fewer consumers than partitions
+
+```
+Topic "events" — 6 partitions
+
+1 Consumer                     3 Consumers
+┌────────────────┐             ┌──────┐  ┌──────┐  ┌──────┐
+│  Consumer A    │             │  A   │  │  B   │  │  C   │
+│ P0 P1 P2       │             │P0 P1 │  │P2 P3 │  │P4 P5 │
+│ P3 P4 P5       │             └──────┘  └──────┘  └──────┘
+└────────────────┘
+All work on one instance      Work spread across 3 instances
+```
+
+Adding consumers up to the partition count gives you proportionally more throughput.
+
+### More consumers than partitions
+
+```
+Topic "events" — 6 partitions,  7 Consumers
+
+┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌──────────┐
+│ A │ │ B │ │ C │ │ D │ │ E │ │ F │ │    G     │
+│P0 │ │P1 │ │P2 │ │P3 │ │P4 │ │P5 │ │  (idle)  │
+└───┘ └───┘ └───┘ └───┘ └───┘ └───┘ └──────────┘
+                                        ▲
+                              No partition to assign!
+                              G is a hot standby — it will
+                              take over if any other consumer fails.
+```
+
+<Note>
+  Having one or two extra consumers beyond the partition count is a common production pattern. The idle consumers provide immediate failover capacity — if Consumer A crashes, Consumer G receives A's partitions within `session.timeout.ms`.
+</Note>
+
+### What triggers a rebalance when scaling?
+
+When you add a new consumer to a group, it sends a `JoinGroup` request to the coordinator. The coordinator then instructs **all** existing members to rejoin, which triggers a new round of partition assignment. Similarly, when a consumer shuts down gracefully it sends a `LeaveGroup` request, triggering an immediate rebalance rather than waiting for session timeout.
+
+## Multiple Consumer Groups
+
+Different consumer groups reading the same topic each maintain their own independent committed offsets. A message produced to a partition is delivered to every consumer group — this is how Kafka implements the publish-subscribe fan-out pattern.
+
+```
+Topic: "orders"
+      │
+      ├──────────────────────────────┐
+      │                              │
+      ▼                              ▼
+Consumer Group A               Consumer Group B
+"order-processor"              "order-audit-logger"
+  offset: 5000                   offset: 4800
+
+Processes orders in real-time   Writes all orders to data warehouse
+```
+
+This means you can safely add a new consumer group (for analytics, auditing, or a new microservice) without affecting existing consumers — each group reads the topic independently from its own committed position.
+
+## Managing Consumer Groups with CLI
+
+Kafka ships with `kafka-consumer-groups.sh` for inspecting and managing groups from the command line.
+
+<CodeGroup>
+```bash List all consumer groups
+# List all consumer groups
+bin/kafka-consumer-groups.sh --list --bootstrap-server localhost:9092
+```
+
+```bash Describe a group
+# Describe a group (lag, offsets, host info per partition)
+bin/kafka-consumer-groups.sh --describe --group order-processor \
+  --bootstrap-server localhost:9092
+```
+
+```bash Reset offsets to beginning
+# Reset offsets to beginning (--dry-run first to preview)
+bin/kafka-consumer-groups.sh --reset-offsets --group order-processor \
+  --topic orders --to-earliest --execute --bootstrap-server localhost:9092
+```
+
+```bash Reset offsets by timestamp
+# Reset offsets to a specific point in time
+bin/kafka-consumer-groups.sh --reset-offsets --group order-processor \
+  --topic orders --to-datetime 2024-01-01T00:00:00.000 --execute \
+  --bootstrap-server localhost:9092
+```
+</CodeGroup>
+
+The `--describe` output looks like this:
+
+```
+GROUP            TOPIC    PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG  CONSUMER-ID         HOST
+order-processor  orders   0          5020            5025            5    consumer-1-abc123   /10.0.0.1
+order-processor  orders   1          5015            5025            10   consumer-2-def456   /10.0.0.2
+order-processor  orders   2          5025            5025            0    consumer-3-ghi789   /10.0.0.3
+```
+
+The `LAG` column is the most important: it tells you how many messages each consumer is behind the producer.
+
+## Monitoring Consumer Lag
+
+Consumer lag is the difference between the **log-end offset** (where the producer is writing) and the **committed offset** (where your consumer last saved its position):
+
+```
+Lag = log-end-offset − committed-offset
+```
+
+Lag greater than zero is normal for a consumer that is catching up after a restart. Lag that grows continuously over time means your consumer cannot keep up with the producer's write rate — you need to add more consumer instances (up to the partition count) or optimise your processing logic.
+
+### Tools for lag monitoring
+
+<CardGroup cols={3}>
+  <Card title="kafka-consumer-groups.sh" icon="terminal">
+    Built-in CLI tool. Use `--describe` to inspect lag per partition in real time. Best for one-off debugging.
+  </Card>
+  <Card title="Kafka UI / AKHQ" icon="chart-bar">
+    Open-source web UIs that visualise consumer group lag, topic throughput, and offset history in a browser dashboard.
+  </Card>
+  <Card title="Prometheus + Grafana" icon="chart-line">
+    Export lag metrics via the JMX Exporter or Kafka Exporter and build time-series dashboards with alerting on lag thresholds.
+  </Card>
+</CardGroup>
+
+## Offset Reset Strategies
+
+When a consumer group has no committed offset for a partition (e.g. on first start) or when you deliberately reset offsets via the CLI, Kafka applies the reset strategy defined by `auto.offset.reset` — or the flag you pass to `kafka-consumer-groups.sh`.
+
+| Strategy | CLI Flag | `auto.offset.reset` Value | Behaviour |
+|---|---|---|---|
+| Earliest | `--to-earliest` | `earliest` | Jump to the very first available offset in the partition |
+| Latest | `--to-latest` | `latest` | Jump to the end — only consume new messages going forward |
+| Specific offset | `--to-offset <n>` | N/A (CLI only) | Jump to an exact numeric offset |
+| Timestamp | `--to-datetime <ISO8601>` | N/A (CLI only) | Jump to the first offset at or after the given timestamp |
+| Shift by | `--shift-by <n>` | N/A (CLI only) | Move the committed offset forward (`+n`) or backward (`-n`) relative to current |
+| None | N/A | `none` | Throw an exception if no committed offset exists — forces explicit handling |
+
+<Warning>
+  Resetting offsets causes messages to be **reprocessed** (reset to earlier) or **skipped** (reset to later). Always perform a `--dry-run` before executing an offset reset in production, and confirm that your consumer logic is idempotent before replaying messages.
+</Warning>
+
+```bash title="Dry run before resetting"
+# Preview what the reset will do — no changes are made
+bin/kafka-consumer-groups.sh --reset-offsets --group order-processor \
+  --topic orders --to-earliest --dry-run --bootstrap-server localhost:9092
+```

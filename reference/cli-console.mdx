@@ -1,0 +1,314 @@
+---
+title: "Kafka Console Producer and Consumer CLI Reference"
+sidebarTitle: "Console CLI"
+description: "Full reference for kafka-console-producer.sh and kafka-console-consumer.sh. Options for keys, headers, formatters, partitions, and offset control."
+---
+
+The console producer and consumer scripts let you send and receive Kafka messages directly from your terminal, making them indispensable for quick tests, debugging, and manual data inspection. This page covers every significant flag for `kafka-console-producer.sh` and `kafka-console-consumer.sh`, followed by a quick reference for the performance test tools.
+
+---
+
+## kafka-console-producer.sh
+
+`kafka-console-producer.sh` reads lines from stdin and sends each line as a single Kafka record. It is the fastest way to push test data into a topic.
+
+### Basic Usage
+
+```bash
+bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic
+```
+
+After running this command, type a message and press **Enter** to send it. Press **Ctrl+C** to exit. To pipe in a file:
+
+```bash
+cat records.txt | bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic
+```
+
+### Producing with Keys
+
+By default the console producer sends records with a `null` key. Use `parse.key` to split each input line into a key and value:
+
+```bash
+bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --property parse.key=true \
+  --property key.separator=:
+```
+
+Each input line should now look like `my-key:my-value`. The text before the first `:` becomes the record key.
+
+<Tip>
+  You can use any single character as the separator. If your values contain colons, choose a less common separator like `|` or `\t` and update `key.separator` accordingly.
+</Tip>
+
+### Controlling Error Behaviour
+
+By default the producer stops on the first parse error. Set `ignore.error=true` to skip malformed lines:
+
+```bash
+bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --property parse.key=true \
+  --property key.separator=: \
+  --property ignore.error=false
+```
+
+### Compression
+
+Apply compression to outgoing record batches:
+
+```bash
+bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --compression-codec snappy
+```
+
+Valid values: `none`, `gzip`, `snappy`, `lz4`, `zstd`.
+
+### Synchronous Sends
+
+Force each record to be acknowledged before the next one is sent. Useful for ordering guarantees in tests, but much slower:
+
+```bash
+bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --sync
+```
+
+### Timeout and Batch Size
+
+```bash
+bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --timeout 3000 \
+  --batch-size 200
+```
+
+| Flag | Description |
+|---|---|
+| `--timeout` | Milliseconds to wait for a send to complete before failing (default: `1000`). |
+| `--batch-size` | Maximum number of messages sent in a single batch (default: `200`). |
+
+---
+
+## kafka-console-consumer.sh
+
+`kafka-console-consumer.sh` subscribes to one or more topics and prints incoming records to stdout. It is the fastest way to verify that messages are flowing through a topic.
+
+### Basic Usage
+
+```bash
+bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic
+```
+
+This subscribes to `my-topic` as part of an auto-generated consumer group and prints new messages as they arrive.
+
+### Read from the Beginning
+
+```bash
+bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --from-beginning
+```
+
+<Note>
+  `--from-beginning` is equivalent to setting `auto.offset.reset=earliest`. Without it, the consumer starts at the latest offset and only prints messages produced after it connects.
+</Note>
+
+### Join a Named Consumer Group
+
+```bash
+bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --group my-consumer-group
+```
+
+All instances sharing the same `--group` will each receive a subset of partitions. Committed offsets are persisted so the group can resume where it left off.
+
+### Consume a Specific Partition and Offset
+
+```bash
+# Read partition 2 from the very beginning
+bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --partition 2 \
+  --offset earliest
+
+# Read partition 2 starting at offset 500
+bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --partition 2 \
+  --offset 500
+```
+
+<Note>
+  `--partition` and `--offset` use manual assignment rather than group subscription, so `--group` is ignored when these flags are present.
+</Note>
+
+### Limit Number of Messages
+
+Exit automatically after consuming a fixed number of records:
+
+```bash
+bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --from-beginning \
+  --max-messages 100
+```
+
+### Print Keys, Timestamps, and Headers
+
+```bash
+bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --from-beginning \
+  --property print.key=true \
+  --property print.timestamp=true \
+  --property print.headers=true \
+  --property key.separator=" | " \
+  --property headers.separator=","
+```
+
+Sample output:
+
+```
+CreateTime:1705276800000 | user-123 | {"event":"login","ip":"10.0.0.1"}
+CreateTime:1705276801234 | user-456 | {"event":"purchase","item":"widget"}
+```
+
+| Property | Default | Description |
+|---|---|---|
+| `print.key` | `false` | Print the record key before the value. |
+| `print.timestamp` | `false` | Print the record timestamp in `CreateTime:` or `LogAppendTime:` format. |
+| `print.headers` | `false` | Print all record headers as `key:value` pairs. |
+| `key.separator` | `\t` | Delimiter between key and value when `print.key=true`. |
+| `headers.separator` | `,` | Delimiter between header entries when `print.headers=true`. |
+| `null.literal` | `null` | String printed in place of a null key or value. |
+
+### Custom Message Formatters
+
+Use `--formatter` to change how records are rendered to stdout:
+
+<Tabs>
+  <Tab title="DefaultMessageFormatter">
+    The default. Prints the value (and optionally key/headers) as a string using the properties above.
+
+    ```bash
+    bin/kafka-console-consumer.sh \
+      --bootstrap-server localhost:9092 \
+      --topic my-topic \
+      --formatter kafka.tools.DefaultMessageFormatter \
+      --property print.key=true
+    ```
+  </Tab>
+  <Tab title="LoggingMessageFormatter">
+    Writes each record to a logger (SLF4J) rather than stdout. Useful for capturing consumer output in structured log pipelines.
+
+    ```bash
+    bin/kafka-console-consumer.sh \
+      --bootstrap-server localhost:9092 \
+      --topic my-topic \
+      --formatter kafka.tools.LoggingMessageFormatter
+    ```
+  </Tab>
+  <Tab title="NoOpMessageFormatter">
+    Discards all records silently. Used for performance testing where you want to measure consumer throughput without the overhead of printing to a terminal.
+
+    ```bash
+    bin/kafka-console-consumer.sh \
+      --bootstrap-server localhost:9092 \
+      --topic my-topic \
+      --formatter kafka.tools.NoOpMessageFormatter
+    ```
+  </Tab>
+</Tabs>
+
+### Skip Errors
+
+Continue consuming even if a record cannot be deserialized or formatted:
+
+```bash
+bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic my-topic \
+  --skip-message-on-error
+```
+
+<Warning>
+  Silently skipping deserialization errors can mask data quality problems. Use this flag only during debugging, and check the consumer log output for error details.
+</Warning>
+
+---
+
+## Performance Test Tools
+
+### kafka-producer-perf-test.sh
+
+Runs a configurable producer load test and reports throughput, latency percentiles, and record counts.
+
+```bash
+bin/kafka-producer-perf-test.sh \
+  --topic perf-topic \
+  --num-records 1000000 \
+  --record-size 1024 \
+  --throughput -1 \
+  --producer-props bootstrap.servers=localhost:9092 acks=all \
+    compression.type=lz4 linger.ms=5
+```
+
+| Flag | Description |
+|---|---|
+| `--num-records` | Total number of records to produce. |
+| `--record-size` | Size of each record in bytes. |
+| `--throughput` | Target records per second. `-1` means produce as fast as possible. |
+| `--producer-props` | Space-separated producer configuration overrides. |
+| `--payload-file` | Use lines from a file as record payloads instead of random bytes. |
+
+Sample output:
+
+```
+500000 records sent, 124567.9 records/sec (121.65 MB/sec), 3.2 ms avg latency, 289.0 ms max latency.
+1000000 records sent, 127843.0 records/sec (124.85 MB/sec), 2.9 ms avg latency, 289.0 ms max latency, 1 ms 50th, 5 ms 95th, 12 ms 99th, 289 ms 99.9th.
+```
+
+### kafka-consumer-perf-test.sh
+
+Runs a consumer load test from the beginning of a topic and reports throughput.
+
+```bash
+bin/kafka-consumer-perf-test.sh \
+  --bootstrap-server localhost:9092 \
+  --topic perf-topic \
+  --messages 1000000 \
+  --threads 1 \
+  --group perf-consumer-group
+```
+
+| Flag | Description |
+|---|---|
+| `--messages` | Number of messages to consume before exiting. |
+| `--threads` | Number of consumer threads (default: `1`). |
+| `--group` | Consumer group ID. |
+| `--fetch-size` | Amount of data to fetch per request in bytes. |
+| `--show-detailed-stats` | Print a rolling stats update every reporting interval. |
+
+<Tip>
+  Run producer and consumer performance tests back-to-back to establish an end-to-end throughput baseline before load testing your application. This helps you distinguish Kafka cluster bottlenecks from application-level bottlenecks.
+</Tip>

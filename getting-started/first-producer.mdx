@@ -1,0 +1,240 @@
+---
+title: "Produce Your First Kafka Messages with Code Examples"
+sidebarTitle: "First Producer"
+description: "Send your first messages to a Kafka topic using the console producer and Java/Python code. Learn key-value messages, acknowledgments, and producer configuration."
+---
+
+A Kafka producer is any application that publishes (writes) messages to one or more Kafka topics. Every message you produce is appended to a partition in the topic's log, assigned a monotonically increasing offset, and durably stored according to the topic's retention policy. This guide shows you how to produce messages using the built-in console producer tool, then moves on to full code examples in Java, Python, and Node.js so you can start sending messages from real applications.
+
+## Using the Console Producer
+
+The `kafka-console-producer.sh` script reads lines from standard input and publishes each line as a separate Kafka message. It is the quickest way to test a topic without writing any code.
+
+### Sending plain messages
+
+Start the producer and type your messages. Press `Enter` after each line to send it, and `Ctrl+C` to exit.
+
+```bash
+bin/kafka-console-producer.sh \
+  --topic my-first-topic \
+  --bootstrap-server localhost:9092
+> Hello, Kafka!
+> This is my first message
+> Every line becomes one Kafka record
+```
+
+### Sending key-value messages
+
+Kafka messages optionally carry a **key** in addition to a value. Keys are used to determine which partition a message is routed to — all messages with the same key always land in the same partition, preserving order for that key. Use the `parse.key` and `key.separator` properties to send keyed messages from the console:
+
+```bash
+bin/kafka-console-producer.sh \
+  --topic my-first-topic \
+  --bootstrap-server localhost:9092 \
+  --property "parse.key=true" \
+  --property "key.separator=:"
+> order-1:{"amount": 99.99, "currency": "USD"}
+> order-2:{"amount": 14.50, "currency": "EUR"}
+> order-1:{"amount": 105.00, "currency": "USD"}
+```
+
+Everything to the left of `:` becomes the message key; everything to the right becomes the value.
+
+<Tip>
+After producing messages, open another terminal and run the console consumer with `--from-beginning` to see all the messages you just sent:
+
+```bash
+bin/kafka-console-consumer.sh \
+  --topic my-first-topic \
+  --from-beginning \
+  --bootstrap-server localhost:9092
+```
+</Tip>
+
+## Java, Python, and Node.js Producers
+
+The console producer is great for testing, but real applications use a client library. The examples below send the same `order-placed` event using the most popular Kafka client for each language.
+
+<CodeGroup>
+
+```java Java
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.serialization.StringSerializer;
+
+import java.util.Properties;
+import java.util.concurrent.ExecutionException;
+
+public class FirstProducer {
+
+    public static void main(String[] args) throws ExecutionException, InterruptedException {
+
+        // 1. Configure the producer
+        Properties props = new Properties();
+        props.put("bootstrap.servers", "localhost:9092");
+        props.put("key.serializer",   StringSerializer.class.getName());
+        props.put("value.serializer", StringSerializer.class.getName());
+        props.put("acks", "all");          // wait for all in-sync replicas
+        props.put("retries", 3);           // retry on transient failures
+        props.put("linger.ms", 5);         // batch for up to 5 ms before sending
+
+        // 2. Create the producer
+        try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
+
+            // 3. Build a record with a key and value
+            String topic = "my-first-topic";
+            String key   = "order-1";
+            String value = "{\"amount\": 99.99, \"currency\": \"USD\"}";
+
+            ProducerRecord<String, String> record = new ProducerRecord<>(topic, key, value);
+
+            // 4. Send synchronously (get() blocks until the broker acknowledges)
+            RecordMetadata metadata = producer.send(record).get();
+
+            System.out.printf(
+                "Sent to topic=%s partition=%d offset=%d%n",
+                metadata.topic(),
+                metadata.partition(),
+                metadata.offset()
+            );
+
+            // 5. Send asynchronously with a callback
+            producer.send(record, (meta, exception) -> {
+                if (exception != null) {
+                    System.err.println("Failed to send: " + exception.getMessage());
+                } else {
+                    System.out.printf(
+                        "Async send → partition=%d offset=%d%n",
+                        meta.partition(),
+                        meta.offset()
+                    );
+                }
+            });
+
+        } // producer.close() is called automatically here
+    }
+}
+```
+
+```python Python
+from confluent_kafka import Producer
+import json
+
+# 1. Configure the producer
+config = {
+    "bootstrap.servers": "localhost:9092",
+    "acks": "all",          # wait for all in-sync replicas
+    "retries": 3,           # retry on transient failures
+    "linger.ms": 5,         # batch messages for up to 5 ms
+}
+
+# 2. Create the producer
+producer = Producer(config)
+
+# 3. Define a delivery callback
+def delivery_callback(err, msg):
+    if err:
+        print(f"Delivery failed: {err}")
+    else:
+        print(
+            f"Delivered to topic={msg.topic()} "
+            f"partition={msg.partition()} "
+            f"offset={msg.offset()}"
+        )
+
+# 4. Produce a message
+topic = "my-first-topic"
+key   = "order-1"
+value = json.dumps({"amount": 99.99, "currency": "USD"})
+
+producer.produce(
+    topic,
+    key=key.encode("utf-8"),
+    value=value.encode("utf-8"),
+    callback=delivery_callback,
+)
+
+# 5. Flush — wait for all outstanding messages to be delivered
+producer.flush()
+```
+
+```javascript Node.js
+const { Kafka } = require("kafkajs");
+
+async function main() {
+  // 1. Create the Kafka client
+  const kafka = new Kafka({
+    clientId: "my-first-producer",
+    brokers: ["localhost:9092"],
+  });
+
+  // 2. Create the producer
+  const producer = kafka.producer({
+    allowAutoTopicCreation: false,
+    idempotent: true, // ensures exactly-once delivery semantics
+  });
+
+  // 3. Connect
+  await producer.connect();
+
+  // 4. Send a message
+  const result = await producer.send({
+    topic: "my-first-topic",
+    messages: [
+      {
+        key: "order-1",
+        value: JSON.stringify({ amount: 99.99, currency: "USD" }),
+      },
+      {
+        key: "order-2",
+        value: JSON.stringify({ amount: 14.50, currency: "EUR" }),
+      },
+    ],
+  });
+
+  console.log("Messages sent:", result);
+  // result is an array of { topicName, partition, errorCode, offset }
+
+  // 5. Disconnect
+  await producer.disconnect();
+}
+
+main().catch(console.error);
+```
+
+</CodeGroup>
+
+## Understanding Producer Output
+
+When a message is successfully written to Kafka, the broker returns metadata that tells you exactly where the message landed. The two most important fields are:
+
+| Field | Description |
+|-------|-------------|
+| `partition` | The zero-indexed partition number within the topic where the message was stored. If you sent a keyed message, the same key will always map to this partition. |
+| `offset` | The sequential position of the message within that partition. Offsets are immutable and always increase. A consumer uses offsets to track how far it has read. |
+
+In the Java example above, the synchronous send prints something like:
+
+```
+Sent to topic=my-first-topic partition=1 offset=42
+```
+
+This tells you the message is the 43rd record (offsets are zero-indexed) in partition 1.
+
+## Producer Configuration Cheat Sheet
+
+The table below lists the most impactful producer configuration properties. You can pass any of these as keys in the `Properties` object (Java), the config dict (Python), or the producer options object (Node.js/kafkajs).
+
+| Property | Default | Recommended (Production) | Description |
+|----------|---------|--------------------------|-------------|
+| `acks` | `1` | `all` | Acknowledgment level. `0` = fire-and-forget; `1` = leader only; `all` = all in-sync replicas. Higher values mean lower throughput but stronger durability guarantees. |
+| `retries` | `2147483647` | `3`–`5` | Number of times to retry a failed send before giving up. |
+| `retry.backoff.ms` | `100` | `200`–`500` | Time to wait between retries. |
+| `linger.ms` | `0` | `5`–`20` | Wait this many milliseconds before sending a batch, allowing more messages to accumulate and increasing throughput. |
+| `batch.size` | `16384` (16 KB) | `65536`–`131072` | Maximum size of a single batch of messages sent to a partition in one request. |
+| `buffer.memory` | `33554432` (32 MB) | `67108864` (64 MB) | Total memory available to the producer for buffering unsent messages. |
+| `compression.type` | `none` | `snappy` or `lz4` | Compress batches before sending. Reduces network I/O at the cost of CPU. `snappy` balances compression ratio and speed. |
+| `max.in.flight.requests.per.connection` | `5` | `1` (if order matters) | Maximum number of unacknowledged requests. Set to `1` to guarantee strict ordering per partition when `retries > 0`. |
+| `enable.idempotence` | `false` | `true` | Ensures each message is written exactly once even if the producer retries. Requires `acks=all` and `max.in.flight.requests.per.connection <= 5`. |
+| `request.timeout.ms` | `30000` | `30000` | Time the producer waits for a response from the broker before considering the request failed. |

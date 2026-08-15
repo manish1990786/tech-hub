@@ -1,0 +1,206 @@
+---
+title: "Kafka Topics and Partitions: How Data Is Organized"
+sidebarTitle: "Topics & Partitions"
+description: "Learn how Apache Kafka organizes data into topics and partitions. Understand partition keys, ordering guarantees, replication, and log segment storage."
+---
+
+Data organization in Apache Kafka revolves entirely around two concepts: **topics** and **partitions**. Topics give your data a logical name and purpose, while partitions are the physical mechanism that enables Kafka to scale, parallelize, and replicate that data across a cluster. Getting these concepts right from the start is one of the most important decisions you'll make when designing a Kafka-based system.
+
+## What Is a Topic?
+
+A **topic** is a named, durable, append-only log that acts as the destination for messages of a particular type or domain. You can think of a topic like a table in a database or a folder on a filesystem — it's a named container that groups related data together.
+
+Unlike a traditional message queue, messages in a Kafka topic are **not deleted after they are consumed**. Records stay in the topic for a configured retention period (or until size limits are reached), which means multiple independent consumers can read the same data without interference, and consumers can replay historical messages at any time.
+
+<Info>
+  Kafka topics are created explicitly before producers write to them (unless `auto.create.topics.enable=true` is set, which is not recommended for production). Each topic has its own configuration for partition count, replication factor, and retention policy.
+</Info>
+
+Key characteristics of a Kafka topic:
+
+- **Durable** — data is written to disk and replicated across brokers
+- **Append-only** — records can only be added to the end of the log; existing records are never modified
+- **Ordered within a partition** — records are strictly ordered by their offset within each partition
+- **Replayable** — any consumer can re-read data by resetting to an earlier offset
+
+## What Is a Partition?
+
+A **partition** is a subdivision of a topic. When you create a topic, you specify how many partitions it should have. Each partition is an independent, ordered sequence of records — a log unto itself. The partition is the fundamental unit of parallelism in Kafka: more partitions allow more consumers to read in parallel and more producers to write in parallel.
+
+Every record within a partition is assigned a unique, monotonically increasing integer called an **offset**. Offsets start at 0 for each partition and only ever increase. A record's position in Kafka is fully identified by the combination of **topic + partition + offset**.
+
+```
+Topic: "orders"  (3 partitions)
+
+Partition 0: [0]→"order-A"  [1]→"order-D"  [2]→"order-G"  [3]→"order-J"  [4]→"order-M"
+                │                │                │                │                │
+Partition 1: [0]→"order-B"  [1]→"order-E"  [2]→"order-H"  [3]→"order-K"  [4]→"order-N"
+                │                │                │                │                │
+Partition 2: [0]→"order-C"  [1]→"order-F"  [2]→"order-I"  [3]→"order-L"  [4]→"order-O"
+
+             offset 0        offset 1        offset 2        offset 3        offset 4
+             (oldest)                                                         (newest →)
+```
+
+Each partition is stored and managed independently on the broker that leads it. This independence is what allows Kafka to scale: a topic with 100 partitions can theoretically be processed by up to 100 consumers in parallel (within a single consumer group).
+
+## Partition Keys
+
+When a producer sends a message, it can optionally include a **partition key**. The key is any value you choose — a user ID, an order ID, a sensor ID, etc. Kafka uses the key to consistently route messages to the same partition.
+
+**Without a key (round-robin / sticky):** Messages are distributed evenly across all partitions. This maximizes throughput but provides no ordering guarantees across related messages.
+
+**With a key (key-based routing):** Kafka hashes the key using the `murmur2` algorithm and assigns the message to `hash(key) % numPartitions`. Every message with the same key always goes to the same partition, guaranteeing that related messages are ordered relative to one another.
+
+<Tabs>
+  <Tab title="Java">
+    ```java title="ProducerWithKey.java"
+    import org.apache.kafka.clients.producer.*;
+    import java.util.Properties;
+
+    Properties props = new Properties();
+    props.put("bootstrap.servers", "localhost:9092");
+    props.put("key.serializer",   "org.apache.kafka.common.serialization.StringSerializer");
+    props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+
+    KafkaProducer<String, String> producer = new KafkaProducer<>(props);
+
+    // Using "customer-42" as the key ensures all messages for this
+    // customer always land in the same partition, preserving order.
+    ProducerRecord<String, String> record = new ProducerRecord<>(
+        "orders",        // topic
+        "customer-42",   // key  ← determines partition
+        "{\"item\": \"widget\", \"qty\": 2}"  // value
+    );
+
+    producer.send(record, (metadata, exception) -> {
+        if (exception == null) {
+            System.out.printf("Written to partition %d at offset %d%n",
+                metadata.partition(), metadata.offset());
+        }
+    });
+    producer.flush();
+    producer.close();
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python title="producer_with_key.py"
+    from confluent_kafka import Producer
+
+    producer = Producer({
+        "bootstrap.servers": "localhost:9092"
+    })
+
+    def delivery_report(err, msg):
+        if err is not None:
+            print(f"Delivery failed: {err}")
+        else:
+            print(f"Written to partition {msg.partition()} at offset {msg.offset()}")
+
+    # The key is encoded as bytes; all messages with the same key
+    # will be routed to the same partition.
+    producer.produce(
+        topic="orders",
+        key="customer-42".encode("utf-8"),      # key ← determines partition
+        value='{"item": "widget", "qty": 2}'.encode("utf-8"),
+        callback=delivery_report
+    )
+
+    producer.flush()
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+  Choose a partition key that has **high cardinality** and distributes evenly. Using a low-cardinality key (e.g., a boolean `is_premium`) can cause **partition skew** — one partition receives the overwhelming majority of traffic while others sit idle.
+</Tip>
+
+## Ordering Guarantees
+
+Kafka guarantees message ordering **within a single partition**. It does **not** guarantee ordering across partitions. This is a critical distinction.
+
+```
+                    Topic: "orders" (3 partitions)
+
+  Producer sends:  msg1(key=A) → Partition 0: [0]msg1  [3]msg4  [6]msg7
+                   msg2(key=B) → Partition 1: [0]msg2  [3]msg5
+                   msg3(key=C) → Partition 2: [0]msg3  [4]msg6
+                   msg4(key=A) → Partition 0  ↑
+                                              │
+                   Ordering guaranteed here ──┘  (all key=A messages are in order)
+                   Ordering NOT guaranteed across partitions 0, 1, 2
+```
+
+For use cases that require strict global ordering (e.g., financial ledger events), you should either use a **single partition** or ensure all related events share the same partition key — both of which trade some parallelism for ordering guarantees.
+
+## Replication
+
+Kafka makes every partition fault-tolerant by replicating it across multiple brokers. The **replication factor** specifies how many copies of each partition exist in the cluster.
+
+- The **leader replica** handles all reads and writes for the partition.
+- **Follower replicas** continuously pull data from the leader and stay in sync.
+- The **In-Sync Replica (ISR)** list contains every replica (leader + followers) that is fully caught up. If a follower falls behind, it is removed from the ISR until it catches up again.
+
+When the leader broker fails, Kafka automatically promotes one of the ISR followers to become the new leader. No data is lost as long as the ISR had at least one member at the time of failure.
+
+<Warning>
+  Setting a replication factor of 1 means there is only one copy of your data. A single broker failure will cause that partition to become unavailable until the broker recovers. Never use replication factor 1 in production.
+</Warning>
+
+## Log Retention
+
+Kafka is not a cache — it is a durable log store. You control how long data is kept using **retention policies**.
+
+<Accordion title="Time-Based Retention">
+  Kafka deletes log segments older than the configured retention time. The relevant configuration is `log.retention.hours` (default: 168 hours / 7 days). You can also use `log.retention.minutes` or `log.retention.ms` for finer granularity.
+
+  ```properties title="server.properties"
+  log.retention.hours=168        # Keep data for 7 days
+  ```
+</Accordion>
+
+<Accordion title="Size-Based Retention">
+  Kafka deletes the oldest log segments when the total size of a partition's log exceeds `log.retention.bytes`. This is applied per-partition. A value of -1 (the default) means no size-based limit.
+
+  ```properties title="server.properties"
+  log.retention.bytes=10737418240   # 10 GB per partition
+  ```
+</Accordion>
+
+<Accordion title="Log Compaction">
+  Log compaction is an alternative retention strategy where Kafka retains the **latest value for each message key** indefinitely, discarding older records with the same key. This is ideal for changelog-style topics where you only care about the current state of an entity (e.g., user profile updates).
+
+  Enable it per topic with `cleanup.policy=compact`.
+</Accordion>
+
+## Creating a Topic
+
+You can create a topic with a specific partition count and replication factor using the `kafka-topics.sh` command-line tool.
+
+```bash title="Create the orders topic"
+kafka-topics.sh \
+  --create \
+  --topic orders \
+  --partitions 6 \
+  --replication-factor 3 \
+  --bootstrap-server localhost:9092
+```
+
+You can verify the topic was created correctly:
+
+```bash title="Describe the orders topic"
+kafka-topics.sh \
+  --describe \
+  --topic orders \
+  --bootstrap-server localhost:9092
+```
+
+<Tip>
+  **Guidelines for choosing partition count:**
+
+  - Start with **1–3× the number of brokers** in your cluster as a baseline.
+  - Consider your **target throughput**: a single partition can handle roughly 10–100 MB/s depending on message size and hardware. Divide your target throughput by that to get a lower bound.
+  - Factor in your **consumer parallelism**: the maximum number of consumers that can read a topic in parallel within a single consumer group equals the number of partitions.
+  - Avoid over-partitioning: each partition has overhead on the broker (open file handles, memory for indexes). A cluster of 3 brokers can comfortably handle tens of thousands of partitions, but millions will degrade performance.
+  - **You can increase partition count later, but you cannot decrease it** — and increasing it can break key-based ordering for existing keys, so plan ahead.
+</Tip>

@@ -1,0 +1,97 @@
+---
+title: "What is Apache Kafka? Event Streaming Explained"
+sidebarTitle: "What is Kafka?"
+description: "Apache Kafka is a distributed event streaming platform. Learn what Kafka is, how it works, and why it's the industry standard for real-time data pipelines."
+---
+
+Apache Kafka is an open-source distributed event streaming platform that lets you publish, store, process, and subscribe to streams of records in real time. Originally created at LinkedIn in 2011 to handle the company's massive activity stream data, Kafka was open-sourced and donated to the Apache Software Foundation, where it has grown into one of the most widely deployed pieces of infrastructure in the modern data stack. At its heart, Kafka solves a deceptively simple problem: how do you move data reliably and at scale between the many different systems that make up a modern organization — without tight coupling, data loss, or prohibitive operational overhead? Understanding how Kafka answers that question is the goal of this page.
+
+## Kafka as a Distributed Log
+
+The most important mental model for Kafka is the **commit log** — the same append-only, sequentially written data structure used inside every serious database engine. When you write a record to Kafka, it is appended to the end of a log file on disk and assigned a monotonically increasing integer called an **offset**. That record stays in the log until your configured retention window expires; it is never modified or deleted when a consumer reads it.
+
+This design has profound consequences. Because the log is append-only and records are addressed by offset, reads are sequential and extremely cache-friendly — both disk and OS page-cache alike. Because records are retained independently of consumption, any number of consumers can read the same data at different speeds and from different positions in the log simultaneously. And because the log is partitioned across many brokers and replicated to configurable redundancy levels, you get horizontal scalability and fault tolerance built directly into the storage layer — not bolted on afterward.
+
+<Note>
+  Kafka partitions a topic's log across multiple brokers. Each partition is an independent, ordered, and immutable sequence of records. Partitioning is how Kafka achieves parallelism: producers write to different partitions concurrently, and consumers in a group each own a subset of partitions to read from.
+</Note>
+
+## Events, Not Messages
+
+Traditional messaging systems think in terms of **messages** — discrete units of work passed from a sender to a receiver and deleted once acknowledged. Kafka thinks in terms of **events** — immutable facts about something that happened in the world at a point in time.
+
+This distinction matters architecturally. A message says "please do this." An event says "this happened." When you model your data as events — `UserRegistered`, `OrderPlaced`, `PaymentProcessed`, `InventoryUpdated` — you unlock capabilities that message-passing cannot provide:
+
+- **Multiple consumers with independent semantics.** The same `OrderPlaced` event can drive an inventory update, a notification email, a fraud check, and a real-time analytics dashboard — all independently, without the producer knowing any of them exist.
+- **Full audit history.** Because events are retained, your Kafka topic is itself a complete ordered history of everything that happened. You can replay it to rebuild state, backfill a new system, or debug a production incident.
+- **Temporal decoupling.** Consumers can go offline and come back hours later, picking up exactly where they left off. The producer never needs to know or care.
+
+<Tip>
+  A useful rule of thumb: if you would be comfortable putting the record in a database for historical reporting, model it as an event in Kafka. If you would discard it the moment it's consumed, reconsider whether Kafka is the right tool.
+</Tip>
+
+## How Kafka Differs from Traditional Messaging
+
+If you've worked with systems like RabbitMQ, Amazon SQS, or ActiveMQ, some Kafka concepts will feel familiar — but the design trade-offs are fundamentally different.
+
+| Feature | Traditional Queue | Apache Kafka |
+|---|---|---|
+| **Message Retention** | Deleted after acknowledgement | Retained for a configurable time window (hours, days, or indefinitely) |
+| **Replay** | Not supported; once consumed, a message is gone | Fully supported; consumers can seek to any offset and re-read at will |
+| **Ordering** | Usually per-queue, often best-effort | Strict ordering guaranteed within each partition |
+| **Scalability** | Typically scaled by adding more queues or consumers | Horizontally scalable by adding partitions and brokers; millions of msg/s on commodity hardware |
+| **Consumer Model** | Competing consumers (each message to one consumer) | Consumer groups (each group gets all messages; within a group, partitions are divided among members) |
+
+The key takeaway: traditional queues are optimized for **work distribution** — getting each task to exactly one worker as fast as possible. Kafka is optimized for **data distribution** — making the same stream of events available to many independent consumers reliably and at scale.
+
+<Warning>
+  Kafka's strict per-partition ordering means that if you need global ordering across all messages in a topic, you must use a single partition. A single partition caps your write throughput to what one broker can handle sequentially, so design your partition key strategy carefully.
+</Warning>
+
+## The Kafka Ecosystem
+
+Kafka is more than a broker. Over time, a rich ecosystem of complementary components has grown up around the core log, each one solving a specific layer of the streaming data problem.
+
+<Accordion title="Kafka Core (The Broker)">
+  The Kafka broker is the server process that stores partitions, replicates data across the cluster, handles producer and consumer connections, and enforces access control. In KRaft mode (available from Kafka 2.8, default from 3.3), the broker also manages cluster metadata internally without a separate ZooKeeper ensemble. You interact with the broker through the Kafka protocol over TCP, using official clients available in Java, Python, Go, .NET, and many other languages.
+</Accordion>
+
+<Accordion title="Kafka Streams">
+  Kafka Streams is a client library for building stateful, fault-tolerant stream processing applications in Java or Scala. It runs inside your own application process — there is no separate cluster to operate. Kafka Streams gives you a high-level DSL for operations like `filter`, `map`, `groupBy`, `aggregate`, `join`, and `windowing`, as well as a lower-level Processor API for custom logic. State is stored locally in RocksDB and backed up to a Kafka topic, making it recoverable after failures.
+</Accordion>
+
+<Accordion title="Kafka Connect">
+  Kafka Connect is a framework for building and running reusable data connectors between Kafka and external systems — databases, cloud object stores, search engines, SaaS APIs, and more. You configure connectors through a REST API rather than writing code. The Confluent Hub hosts hundreds of pre-built connectors for systems like PostgreSQL, MySQL, Elasticsearch, S3, Snowflake, and many others.
+</Accordion>
+
+<Accordion title="Schema Registry">
+  The Schema Registry is a service (most commonly Confluent Schema Registry or Apicurio) that stores and enforces Avro, Protobuf, or JSON Schema schemas for your Kafka topics. Producers register schemas before writing; consumers retrieve them before deserializing. The registry enforces compatibility rules — backward, forward, or full — so that schema changes don't break existing consumers.
+</Accordion>
+
+<Accordion title="ksqlDB">
+  ksqlDB is a streaming database built on Kafka Streams that lets you write SQL queries over Kafka topics. You can create persistent queries that continuously transform, aggregate, or join streams, and you can expose the results as new Kafka topics or as materialized views queryable over HTTP. ksqlDB is a great fit for teams that want stream processing power without writing Java.
+</Accordion>
+
+## When to Use Kafka
+
+Kafka is an excellent choice for a wide range of real-time data problems. You should seriously consider it when:
+
+- You need to decouple data producers from data consumers so that each can evolve independently
+- Multiple downstream systems need to consume the same stream of events — potentially for different purposes
+- You need durable, replayable event storage as the single source of truth for a domain
+- You are building an event-sourced system where application state is derived by replaying a log of domain events
+- You need to integrate data between many different systems (databases, data warehouses, microservices) without building point-to-point pipelines
+- Your data volumes exceed what a traditional message broker can handle at acceptable latency
+- You need reliable change data capture (CDC) from a database to propagate changes downstream in real time
+- You are building a real-time analytics pipeline where freshness of data is a competitive requirement
+
+## When Not to Use Kafka
+
+Kafka is a powerful tool, but it is not always the right one. Consider alternatives when:
+
+- You need a simple task queue where each job should be processed by exactly one worker and you don't need replay — a purpose-built queue like RabbitMQ or Amazon SQS may be simpler to operate
+- Your message volumes are low (thousands per day, not millions per second) and operational simplicity outweighs Kafka's capabilities
+- You need request/reply semantics where a producer waits synchronously for a response — a REST API or gRPC service is a more natural fit
+- Your team has no existing JVM or distributed systems expertise and the operational learning curve would slow you down significantly
+- You are building a small prototype or MVP where the infrastructure overhead of a Kafka cluster isn't yet justified
+- You need sub-millisecond latency for individual messages — Kafka optimizes for throughput and its batching behavior adds a small amount of latency by design

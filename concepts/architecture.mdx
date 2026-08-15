@@ -1,0 +1,125 @@
+---
+title: "Apache Kafka Architecture: A Complete Overview"
+sidebarTitle: "Architecture"
+description: "Understand Apache Kafka's distributed architecture including brokers, topics, partitions, producers, consumers, and how they work together in a cluster."
+---
+
+Apache Kafka is built around a distributed, partitioned, replicated commit log. Rather than treating messages as transient events that disappear after delivery, Kafka persists every message to disk and allows any number of consumers to read from any point in the log. This design makes Kafka extraordinarily durable, scalable, and replayable — the backbone of modern event-driven systems. Understanding Kafka's architecture means understanding how brokers, topics, partitions, producers, and consumers collaborate to deliver these guarantees.
+
+<Note>
+  This page gives you a bird's-eye view of Kafka's architecture. Each section links to a dedicated deep-dive page. We recommend reading the Core Concepts pages in order: Architecture → Topics & Partitions → Producers → Consumers → Brokers → ZooKeeper & KRaft.
+</Note>
+
+## The Kafka Cluster
+
+A Kafka **cluster** is a group of one or more **brokers** — server processes that store and serve data. Every broker holds a subset of the partitions that make up your topics. No single broker owns all the data; responsibility is spread across the cluster to provide horizontal scalability and fault tolerance.
+
+Within a cluster, partitions follow a **leader/follower** replication model. For every partition, exactly one broker acts as the **leader** — it handles all reads and writes for that partition. The remaining brokers that hold a copy of that partition are **followers**. Followers continuously replicate data from the leader and remain ready to take over if the leader fails.
+
+```
+                  ┌─────────────────────────────────────────────┐
+                  │               Kafka Cluster                 │
+                  │                                             │
+                  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
+                  │  │ Broker 1 │  │ Broker 2 │  │ Broker 3 │  │
+                  │  │          │  │          │  │          │  │
+                  │  │ P0 (L)   │  │ P0 (F)   │  │ P0 (F)   │  │
+                  │  │ P1 (F)   │  │ P1 (L)   │  │ P1 (F)   │  │
+                  │  │ P2 (F)   │  │ P2 (F)   │  │ P2 (L)   │  │
+                  │  └──────────┘  └──────────┘  └──────────┘  │
+                  └─────────────────────────────────────────────┘
+                       ▲   ▲   ▲                  │   │   │
+                       │   │   │                  ▼   ▼   ▼
+               ┌───────────────────┐    ┌────────────────────────┐
+               │     Producers     │    │    Consumer Groups     │
+               │  App A  │  App B  │    │  Group X  │  Group Y   │
+               └───────────────────┘    └────────────────────────┘
+
+                  L = Leader Partition    F = Follower Partition
+```
+
+The **controller broker** is a special broker elected within the cluster. It monitors broker health and is responsible for triggering leader elections when a broker fails. Learn more on the [Brokers](/concepts/brokers) page.
+
+## Producers and Consumers
+
+**Producers** are client applications that publish (write) messages to Kafka topics. A producer decides which topic — and optionally which partition — a message is written to. Producers are fully decoupled from consumers: they have no knowledge of who will read the messages or when.
+
+**Consumers** are client applications that subscribe to topics and read messages. Consumers track their own position in the log via **offsets**, which means they can replay messages, skip ahead, or pause and resume at any time without affecting other consumers.
+
+<CardGroup cols={2}>
+  <Card title="Producers Deep Dive" icon="upload" href="/concepts/producers">
+    Covers acks, batching, compression, partitioning strategy, retries, and idempotent producers.
+  </Card>
+  <Card title="Consumers Deep Dive" icon="download" href="/concepts/consumers">
+    Covers the poll loop, offset management, auto-commit, manual commit, and consumer groups.
+  </Card>
+</CardGroup>
+
+## Topics and Partitions
+
+A **topic** is a named, durable, append-only log — the fundamental unit of data organization in Kafka. Topics are split into **partitions**, which are the actual units of parallelism and storage. Each partition is an ordered, immutable sequence of messages. More partitions means more parallelism for both producers and consumers.
+
+Every message within a partition is assigned a monotonically increasing integer called an **offset**. Offsets let consumers know exactly where they are in the log and guarantee ordered delivery within a single partition.
+
+<Card title="Topics & Partitions Deep Dive" icon="table" href="/concepts/topics-partitions">
+  Covers partition keys, ordering guarantees, replication, log retention, and choosing partition counts.
+</Card>
+
+## ZooKeeper and KRaft
+
+Historically, Kafka relied on **Apache ZooKeeper** to manage cluster metadata — tracking which brokers are alive, storing topic configurations, and coordinating leader elections. While ZooKeeper works, it adds operational complexity because you're running two distributed systems instead of one.
+
+Starting with Kafka 2.8 (and becoming the default in Kafka 3.3), **KRaft mode** replaces ZooKeeper with a Raft-based consensus protocol built directly into Kafka. KRaft simplifies deployment, improves startup times, and removes the scalability ceiling that ZooKeeper imposed.
+
+<Warning>
+  ZooKeeper mode is deprecated as of Kafka 3.5 and will be removed in a future release. New deployments should use KRaft mode.
+</Warning>
+
+<Card title="ZooKeeper & KRaft Deep Dive" icon="server" href="/concepts/zookeeper-kraft">
+  Compare the two metadata management approaches and learn how to enable KRaft mode.
+</Card>
+
+## Replication and Fault Tolerance
+
+Kafka achieves fault tolerance by replicating each partition across multiple brokers. The **replication factor** controls how many copies of a partition exist. A replication factor of 3 means one leader and two followers for each partition.
+
+The **In-Sync Replica (ISR)** list is the set of replicas that are fully caught up with the leader. Kafka only considers a write "committed" once all replicas in the ISR have acknowledged it (when `acks=all` is configured). If a follower falls too far behind — due to network lag or broker overload — it is removed from the ISR until it catches up.
+
+| Replication Factor | Tolerated Broker Failures | Notes |
+|--------------------|--------------------------|-------|
+| 1 | 0 | Development only — no redundancy |
+| 2 | 1 | Minimum for fault tolerance |
+| 3 | 2 | Recommended for most production workloads |
+| 5 | 4 | High-criticality systems |
+
+<Info>
+  The `min.insync.replicas` broker/topic configuration sets the minimum number of replicas that must be in the ISR for a produce request with `acks=all` to succeed. Setting this to 2 with a replication factor of 3 is a common production best practice.
+</Info>
+
+## Data Flow
+
+Understanding the end-to-end journey of a single message helps tie all the architectural concepts together.
+
+<Steps>
+  <Step title="Producer creates a record">
+    Your application creates a `ProducerRecord` with a topic name, an optional partition key, and a message value. The producer serializes the key and value using the configured serializers.
+  </Step>
+  <Step title="Partition selection">
+    The producer's **partitioner** determines which partition to write to. If a key is provided, the default partitioner hashes the key to consistently route all messages with that key to the same partition. Without a key, messages are distributed round-robin (or via sticky partitioning) across available partitions.
+  </Step>
+  <Step title="Batching and buffering">
+    The record is added to an in-memory **batch** for the target broker. Kafka batches records together to reduce network overhead. The producer waits up to `linger.ms` milliseconds or until the batch reaches `batch.size` bytes before sending.
+  </Step>
+  <Step title="Transmission to the leader broker">
+    The batch is sent over the network to the broker that is currently the **leader** for the target partition. Only the leader accepts writes.
+  </Step>
+  <Step title="Replication to followers">
+    The leader writes the batch to its local log and immediately begins replicating to the follower brokers in the ISR. Follower brokers fetch new data from the leader continuously.
+  </Step>
+  <Step title="Acknowledgment sent to producer">
+    Once the configured `acks` condition is met (0 = fire-and-forget, 1 = leader only, all = full ISR), the leader sends an acknowledgment back to the producer with the assigned partition and offset.
+  </Step>
+  <Step title="Consumer polls for records">
+    A consumer in a consumer group calls `poll()` on a loop. Kafka returns a batch of records from the partitions assigned to that consumer. The consumer processes each record and then commits its offset — either automatically or manually.
+  </Step>
+</Steps>

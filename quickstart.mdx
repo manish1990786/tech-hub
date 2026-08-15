@@ -1,47 +1,160 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Apache Kafka in 10 Minutes"
+sidebarTitle: "Quickstart"
+description: "Install Apache Kafka, create your first topic, and produce and consume your first messages in under 10 minutes with this step-by-step quickstart guide."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+Apache Kafka is a distributed event streaming platform used by thousands of companies for high-performance data pipelines, streaming analytics, and mission-critical applications. In this quickstart you will download Kafka, start a broker, create a topic, publish a few messages, and read them back — all on your local machine in under ten minutes.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+<Note>
+**Prerequisites**
+- Java 11 or higher installed and available on your `PATH` (verify with `java -version`)
+- At least 500 MB of free disk space
+</Note>
 
-## Prerequisites
+<Tip>
+For new installations, the KRaft mode (step 2, option B) is recommended. KRaft removes the ZooKeeper dependency, simplifying your setup and reflecting the direction of the Kafka project going forward.
+</Tip>
 
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+## Steps
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Download Kafka">
+    Download the latest Apache Kafka 3.7.0 binary and extract it to a working directory.
 
     ```bash
-    npm install your-package
+    wget https://downloads.apache.org/kafka/3.7.0/kafka_2.13-3.7.0.tgz
+    tar -xzf kafka_2.13-3.7.0.tgz
+    cd kafka_2.13-3.7.0
     ```
+
+    If you prefer `curl` over `wget`, use the following command instead:
+
+    ```bash
+    curl -O https://downloads.apache.org/kafka/3.7.0/kafka_2.13-3.7.0.tgz
+    tar -xzf kafka_2.13-3.7.0.tgz
+    cd kafka_2.13-3.7.0
+    ```
+
+    All subsequent commands in this guide assume your working directory is `kafka_2.13-3.7.0`.
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
-    ```
+  <Step title="Start ZooKeeper or KRaft">
+    Kafka can run in two modes: the traditional ZooKeeper-based mode, or the newer self-managed KRaft mode. Choose the option that best suits your needs — both will work for this quickstart.
+
+    <Tabs>
+      <Tab title="Option A — ZooKeeper (traditional)">
+        Open a dedicated terminal window and start the bundled ZooKeeper server. Keep this terminal open throughout the quickstart.
+
+        ```bash
+        bin/zookeeper-server-start.sh config/zookeeper.properties
+        ```
+
+        Wait until you see a line similar to `INFO binding to port 0.0.0.0/0.0.0.0:2181` before moving on.
+      </Tab>
+
+      <Tab title="Option B — KRaft (recommended)">
+        KRaft does not require ZooKeeper. Generate a unique cluster ID, format the log storage directory, and you are ready to start the broker in a single terminal.
+
+        ```bash
+        # Generate a new cluster UUID
+        KAFKA_CLUSTER_ID="$(bin/kafka-storage.sh random-uuid)"
+
+        # Format the storage directory with the cluster ID
+        bin/kafka-storage.sh format -t $KAFKA_CLUSTER_ID -c config/kraft/server.properties
+        ```
+
+        You should see output confirming the storage has been formatted. Keep the cluster ID in your shell session — it is only needed once.
+      </Tab>
+    </Tabs>
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Start the Kafka Broker">
+    Open a new terminal window (leave ZooKeeper running in its own terminal if you chose Option A) and start the Kafka broker.
+
+    <Tabs>
+      <Tab title="ZooKeeper mode">
+        ```bash
+        bin/kafka-server-start.sh config/server.properties
+        ```
+      </Tab>
+
+      <Tab title="KRaft mode">
+        ```bash
+        bin/kafka-server-start.sh config/kraft/server.properties
+        ```
+      </Tab>
+    </Tabs>
+
+    The broker is ready when you see a log line that includes `[KafkaServer id=0] started`. Leave this terminal running and open a new one for the remaining steps.
+  </Step>
+
+  <Step title="Create a Topic">
+    Kafka stores messages inside named topics. Create a topic called `quickstart-events` with a single partition and replication factor of 1 (appropriate for a single-node local cluster).
 
     ```bash
-    your-cli start
+    bin/kafka-topics.sh --create \
+      --topic quickstart-events \
+      --bootstrap-server localhost:9092
     ```
+
+    Confirm the topic exists by listing all available topics:
+
+    ```bash
+    bin/kafka-topics.sh --list --bootstrap-server localhost:9092
+    ```
+
+    You should see `quickstart-events` printed to stdout.
+  </Step>
+
+  <Step title="Produce Some Messages">
+    The console producer reads lines from stdin and sends each line as a separate message to the specified topic. Start the producer, type a few messages, and press Enter after each one.
+
+    ```bash
+    bin/kafka-console-producer.sh --topic quickstart-events --bootstrap-server localhost:9092
+    ```
+
+    Once the `>` prompt appears, type your messages:
+
+    ```
+    > Hello, Kafka!
+    > This is my first event.
+    > Kafka is a distributed event streaming platform.
+    ```
+
+    Press `Ctrl+C` to stop the producer when you are done.
+  </Step>
+
+  <Step title="Consume Messages">
+    Open a new terminal window and start the console consumer. The `--from-beginning` flag tells Kafka to replay all messages stored in the topic from the very first offset, so you will immediately see every message you produced in the previous step.
+
+    ```bash
+    bin/kafka-console-consumer.sh \
+      --topic quickstart-events \
+      --from-beginning \
+      --bootstrap-server localhost:9092
+    ```
+
+    You should see your three messages printed to the terminal. The consumer will then wait for new messages — switch back to the producer terminal and type another message to see it appear in real time. Press `Ctrl+C` to exit.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+<Note type="success">
+🎉 **You've produced and consumed your first Kafka messages!** Your local Kafka cluster is up and running. You created a topic, published events to it, and read those events back — the core of everything Kafka does at any scale.
+</Note>
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+## What's Next?
+
+Now that you have a working local cluster, explore the topics below to deepen your understanding and start building real applications.
+
+<CardGroup cols={3}>
+  <Card title="Core Concepts" icon="book-open" href="/concepts/architecture">
+    Understand brokers, topics, partitions, and consumer groups — the building blocks behind everything Kafka does.
+  </Card>
+  <Card title="Installation Guide" icon="server" href="/getting-started/installation">
+    Set up a production-ready Kafka installation on Linux, macOS, Windows, or Docker with detailed configuration guidance.
+  </Card>
+  <Card title="First Producer" icon="paper-plane" href="/getting-started/first-producer">
+    Go beyond the console producer and send messages with Java, Python, and Node.js using real client libraries.
+  </Card>
+</CardGroup>

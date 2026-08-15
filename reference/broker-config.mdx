@@ -1,0 +1,110 @@
+---
+title: "Kafka Broker Configuration Reference"
+sidebarTitle: "Broker Config"
+description: "Complete reference for Apache Kafka broker configuration properties. Covers listeners, replication, log retention, performance, and security settings with defaults."
+---
+
+Every Kafka broker reads its configuration from a `server.properties` file (or equivalent KRaft config) at startup. Understanding these properties lets you tune your cluster for the throughput, durability, and latency profile your workload demands. The tables below cover the most important properties in each category, along with their defaults and a plain-English description of what each one controls.
+
+<Note>
+  Properties marked with a dash (—) in the Default column have no built-in default and **must** be provided explicitly, or Kafka will refuse to start.
+</Note>
+
+<AccordionGroup>
+
+  <Accordion title="Listener & Network">
+    These properties control how the broker exposes itself to clients and how much network I/O capacity it allocates.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `listeners` | `PLAINTEXT://:9092` | Comma-separated list of URIs the broker listens on. Use the format `PROTOCOL://host:port`. |
+    | `advertised.listeners` | `PLAINTEXT://localhost:9092` | The listeners published to ZooKeeper or KRaft metadata for clients to use when connecting. Must be reachable from clients. |
+    | `listener.security.protocol.map` | `PLAINTEXT:PLAINTEXT,SSL:SSL,...` | Maps each listener name to its security protocol. Required when you define custom listener names. |
+    | `num.network.threads` | `3` | Number of threads handling network I/O (accept, send, receive). Increase for high-connection-count deployments. |
+    | `socket.send.buffer.bytes` | `102400` | The `SO_SNDBUF` socket send buffer. Set to `-1` to use the OS default. |
+    | `socket.receive.buffer.bytes` | `102400` | The `SO_RCVBUF` socket receive buffer. Set to `-1` to use the OS default. |
+    | `socket.request.max.bytes` | `104857600` | Maximum size of a single request the broker will accept (100 MB). Requests larger than this are rejected. |
+
+    <Tip>
+      On high-throughput clusters, increase `num.network.threads` to `6`–`9` and tune the socket buffers to match your network interface's MTU and bandwidth.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="Log & Storage">
+    These properties govern where Kafka stores data on disk and how long it retains it.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `log.dirs` | `/tmp/kafka-logs` | Comma-separated list of directories where log data is stored. Spread across multiple disks for better I/O parallelism. |
+    | `num.partitions` | `1` | Default number of partitions for auto-created topics. Does not affect topics created with explicit partition counts. |
+    | `log.retention.hours` | `168` | Number of hours to retain log segments (7 days). Superseded by `log.retention.ms` if both are set. |
+    | `log.retention.bytes` | `-1` | Maximum total size of the log for a partition before old segments are deleted. `-1` means unlimited. |
+    | `log.segment.bytes` | `1073741824` | Maximum size of a single log segment file (1 GB). A new segment is opened when this limit is reached. |
+    | `log.roll.hours` | `168` | Maximum time before a new log segment is opened, even if `log.segment.bytes` has not been reached. |
+    | `log.cleanup.policy` | `delete` | Determines how old log data is handled. Use `delete` for time/size-based retention, `compact` for log compaction, or `delete,compact` for both. |
+    | `log.compaction.lag.ms` | `Long.MAX_VALUE` | Maximum time a message will remain uncompacted in the log. Only relevant when `cleanup.policy=compact`. |
+
+    <Warning>
+      Storing logs in `/tmp/kafka-logs` is fine for development but data will be lost on OS restart. Always point `log.dirs` at a persistent, dedicated data volume in production.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Replication">
+    These properties define how Kafka replicates data across brokers and what guarantees it maintains under failure.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `default.replication.factor` | `1` | Default replication factor applied to auto-created topics. Set to at least `3` in production. |
+    | `min.insync.replicas` | `1` | Minimum number of in-sync replicas (ISR) that must acknowledge a write when a producer uses `acks=all`. |
+    | `unclean.leader.election.enable` | `false` | When `true`, allows an out-of-sync replica to be elected leader, potentially causing data loss. Leave `false` in production. |
+    | `replica.lag.time.max.ms` | `30000` | Maximum milliseconds a follower replica can be behind before it is removed from the ISR list. |
+    | `num.replica.fetchers` | `1` | Number of replication fetcher threads per broker. Increase to improve replication throughput on multi-disk or high-partition clusters. |
+
+    <Note>
+      The recommended production baseline is `default.replication.factor=3` and `min.insync.replicas=2`. This tolerates one broker failure without sacrificing write durability.
+    </Note>
+  </Accordion>
+
+  <Accordion title="Performance">
+    These properties control the thread pools and queuing behaviour that determine the broker's overall request-handling capacity.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `num.io.threads` | `8` | Number of threads handling disk I/O. Match to the number of disks (or slightly above) for best performance. |
+    | `queued.max.requests` | `500` | Maximum number of requests queued in the network layer before new connections are blocked. |
+    | `background.threads` | `10` | Threads used for background operations such as log flushing, log deletion, and leader rebalancing. |
+
+    <Tip>
+      A rough starting rule: set `num.io.threads` to `2× the number of disks` and monitor the `RequestHandlerAvgIdlePercent` JMX metric. If it falls below 30%, increase the thread count.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="ZooKeeper (Legacy)">
+    Prior to Apache Kafka 3.3, ZooKeeper was required for cluster metadata management. These settings are still relevant for clusters that have not yet migrated to KRaft mode.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `zookeeper.connect` | — | ZooKeeper connection string in the format `host1:port1,host2:port2/chroot`. Required in ZooKeeper mode. |
+    | `zookeeper.connection.timeout.ms` | `18000` | Maximum time the broker waits when establishing a connection to ZooKeeper before failing. |
+
+    <Warning>
+      ZooKeeper mode is **deprecated** as of Kafka 3.5 and will be removed in a future major release. Plan your migration to KRaft.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="KRaft Mode">
+    KRaft (Kafka Raft) replaces ZooKeeper with a built-in metadata quorum. These properties are required when running in KRaft mode.
+
+    | Property | Default | Description |
+    |---|---|---|
+    | `process.roles` | — | Roles this node plays: `broker`, `controller`, or `broker,controller` (combined mode). |
+    | `node.id` | — | Unique numeric ID for this node. Replaces `broker.id` in KRaft mode and must be globally unique in the cluster. |
+    | `controller.quorum.voters` | — | Comma-separated list of controller nodes in `id@host:port` format. All nodes must list the full quorum. |
+    | `metadata.log.dir` | Same as `log.dirs` | Directory for the `__cluster_metadata` internal topic. Isolate this on a fast, reliable disk. |
+
+    <Info>
+      In KRaft combined mode (`process.roles=broker,controller`) a single node handles both roles. This is convenient for development but is not recommended for production clusters with more than a handful of nodes.
+    </Info>
+  </Accordion>
+
+</AccordionGroup>

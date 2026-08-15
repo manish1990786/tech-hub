@@ -1,0 +1,221 @@
+---
+title: "Configuring Apache Kafka for Development and Production"
+sidebarTitle: "Configuration"
+description: "Learn how to configure Apache Kafka for different environments. Covers broker, producer, and consumer configuration files with recommended production settings."
+---
+
+Kafka's behaviour is controlled entirely through plain-text properties files. Understanding which knobs to turn — and why — is the difference between a cluster that works in a demo and one that holds up under real production traffic. This guide walks you through every major configuration area, from the files Kafka ships with to the JVM settings that keep your brokers stable under load.
+
+## Configuration Files
+
+Kafka ships with three primary configuration files inside the `config/` directory of your installation:
+
+| File | Purpose |
+|---|---|
+| `config/server.properties` | Broker-level settings — networking, storage, replication, and retention |
+| `config/producer.properties` | Default producer client settings |
+| `config/consumer.properties` | Default consumer client settings |
+
+In production you will typically manage these files through your configuration management tool (Ansible, Chef, Terraform, etc.) and deploy one copy per broker, varying only the settings that differ per node such as `broker.id` and `log.dirs`.
+
+## Broker Configuration
+
+The `server.properties` file is the heart of your Kafka setup. Below is an annotated reference covering the most important settings you will need to configure.
+
+```properties
+# -----------------------------------------------
+# Broker identity
+# -----------------------------------------------
+# Must be unique for every broker in the cluster.
+broker.id=0
+
+# -----------------------------------------------
+# Network
+# -----------------------------------------------
+# The address the broker binds to. Use 0.0.0.0 to
+# listen on all interfaces.
+listeners=PLAINTEXT://:9092
+
+# The address advertised to clients and other brokers.
+# NEVER set this to localhost in a multi-node or
+# remote-client scenario.
+advertised.listeners=PLAINTEXT://your-hostname:9092
+
+# -----------------------------------------------
+# Log storage
+# -----------------------------------------------
+# Directory where Kafka stores its log segments.
+# Use a dedicated, fast disk path in production.
+log.dirs=/var/kafka-logs
+
+# Default number of partitions for auto-created topics.
+num.partitions=3
+
+# Default replication factor for auto-created topics.
+default.replication.factor=3
+
+# -----------------------------------------------
+# Log retention
+# -----------------------------------------------
+# Retain log segments for 7 days (168 hours).
+log.retention.hours=168
+
+# -1 means no size-based retention limit.
+log.retention.bytes=-1
+
+# Each log segment file is rolled at 1 GiB.
+log.segment.bytes=1073741824
+
+# -----------------------------------------------
+# ZooKeeper (pre-KRaft clusters)
+# -----------------------------------------------
+zookeeper.connect=localhost:2181
+
+# -----------------------------------------------
+# Performance
+# -----------------------------------------------
+# Threads handling network requests from clients.
+num.network.threads=3
+
+# Threads performing disk I/O.
+num.io.threads=8
+
+# Socket send and receive buffer sizes in bytes.
+socket.send.buffer.bytes=102400
+socket.receive.buffer.bytes=102400
+```
+
+<Tip>
+  Always set `broker.id` to a unique integer for every broker in the cluster. Duplicate IDs cause split-brain behaviour that is difficult to diagnose and recover from.
+</Tip>
+
+## Development vs Production Settings
+
+Different environments have very different priorities. Development values optimise for fast iteration and minimal resource use; production values optimise for durability, availability, and throughput.
+
+| Setting | Development | Production | Reason |
+|---|---|---|---|
+| `default.replication.factor` | `1` | `3` | Tolerate up to 2 broker failures |
+| `min.insync.replicas` | `1` | `2` | Guarantee at least 2 replicas acknowledged |
+| `num.partitions` | `1` | `6–12+` | Parallelism scales with partition count |
+| `log.retention.hours` | `1–24` | `168` (7 days) | Retain data for recovery windows |
+| `log.retention.bytes` | `104857600` (100 MB) | `-1` (unlimited) | Avoid filling dev disks |
+| `num.io.threads` | `2` | `8–16` | Match disk throughput capacity |
+| `num.network.threads` | `2` | `6–8` | Handle concurrent client connections |
+| `socket.send.buffer.bytes` | `102400` | `1048576` | Increase for high-throughput brokers |
+| `auto.create.topics.enable` | `true` | `false` | Prevent accidental topic creation |
+| `unclean.leader.election.enable` | `true` | `false` | Never elect an out-of-sync leader |
+
+## Configuring Listeners
+
+Kafka supports multiple listener protocols on the same broker. You define each listener with the format `PROTOCOL://HOST:PORT` and can combine multiple listeners separated by commas.
+
+<Tabs>
+  <Tab title="PLAINTEXT (Dev only)">
+    No encryption or authentication. Use only in isolated development environments.
+
+    ```properties
+    listeners=PLAINTEXT://:9092
+    advertised.listeners=PLAINTEXT://kafka-host:9092
+    listener.security.protocol.map=PLAINTEXT:PLAINTEXT
+    ```
+  </Tab>
+  <Tab title="SSL">
+    Encrypts data in transit using TLS. Requires keystores and truststores on each broker.
+
+    ```properties
+    listeners=SSL://:9093
+    advertised.listeners=SSL://kafka-host:9093
+    listener.security.protocol.map=SSL:SSL
+    ssl.keystore.location=/var/ssl/private/kafka.server.keystore.jks
+    ssl.keystore.password=keystore-password
+    ssl.truststore.location=/var/ssl/private/kafka.server.truststore.jks
+    ssl.truststore.password=truststore-password
+    ```
+  </Tab>
+  <Tab title="SASL_SSL">
+    Combines SASL authentication with TLS encryption. The recommended choice for production clusters.
+
+    ```properties
+    listeners=SASL_SSL://:9094
+    advertised.listeners=SASL_SSL://kafka-host:9094
+    listener.security.protocol.map=SASL_SSL:SASL_SSL
+    sasl.mechanism.inter.broker.protocol=SCRAM-SHA-256
+    sasl.enabled.mechanisms=SCRAM-SHA-256
+    ```
+  </Tab>
+  <Tab title="Multiple Listeners">
+    You can expose multiple protocols simultaneously — for example, an internal PLAINTEXT listener for inter-broker traffic and a SASL_SSL listener for external clients.
+
+    ```properties
+    listeners=INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:9094
+    advertised.listeners=INTERNAL://broker-1.internal:9092,EXTERNAL://broker-1.example.com:9094
+    listener.security.protocol.map=INTERNAL:PLAINTEXT,EXTERNAL:SASL_SSL
+    inter.broker.listener.name=INTERNAL
+    ```
+  </Tab>
+</Tabs>
+
+## Topic Defaults
+
+These broker-level settings define the defaults applied to any topic that is created without explicit configuration overrides.
+
+<CodeGroup>
+```properties server.properties
+# Number of partitions created for a new topic by default.
+# Increase this to enable higher parallelism from the start.
+num.partitions=3
+
+# How many replicas are created for each partition by default.
+# In a 3-broker cluster this means every partition is replicated
+# on all three brokers.
+default.replication.factor=3
+
+# Minimum number of in-sync replicas a leader must have before
+# it accepts a produce request with acks=all.
+# Setting this to 2 (with replication factor 3) lets you tolerate
+# one broker failure without losing durability.
+min.insync.replicas=2
+
+# Prevent topics from being created implicitly when a producer
+# or consumer references a non-existent topic.
+auto.create.topics.enable=false
+```
+</CodeGroup>
+
+<Note>
+  `min.insync.replicas` only takes effect when producers use `acks=all` (or `acks=-1`). If your producers use `acks=1` this setting has no impact on durability guarantees.
+</Note>
+
+## JVM Configuration
+
+Kafka brokers run on the JVM, and the default heap settings are far too small for production workloads. You configure JVM options through environment variables before starting the broker.
+
+```bash
+# Set a fixed heap size — start and max should be equal to
+# prevent GC-induced heap resizing under load.
+export KAFKA_HEAP_OPTS="-Xms4g -Xmx4g"
+
+# Use the G1 garbage collector with a 20ms max pause target.
+# -server enables JIT optimisations for long-running processes.
+export KAFKA_JVM_PERFORMANCE_OPTS="-server -XX:+UseG1GC -XX:MaxGCPauseMillis=20"
+```
+
+Place these exports in a startup script or pass them as environment variables through your process manager (systemd, Docker, Kubernetes).
+
+### Recommended Heap Sizes by Role
+
+| Scenario | Recommended `-Xms`/`-Xmx` |
+|---|---|
+| Development / single broker | `1g` |
+| Production broker (moderate load) | `4g` |
+| Production broker (high throughput) | `6g` – `8g` |
+| ZooKeeper | `512m` – `1g` |
+
+<Note>
+  Do **not** set the heap larger than 6–8 GB on most workloads. Kafka relies heavily on the OS page cache for performance, and a very large JVM heap steals memory from the page cache and can cause long GC pauses.
+</Note>
+
+<Warning>
+  Never set `advertised.listeners` to `localhost` in production. Remote clients resolve the advertised address when connecting — if it resolves to `127.0.0.1`, clients outside the broker's own machine will be unable to connect and will see confusing timeout errors.
+</Warning>

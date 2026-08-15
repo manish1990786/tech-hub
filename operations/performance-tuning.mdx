@@ -1,0 +1,265 @@
+---
+title: "Apache Kafka Performance Tuning: Throughput and Latency"
+sidebarTitle: "Performance Tuning"
+description: "Optimize Apache Kafka throughput and latency with producer batching, compression, consumer fetch tuning, OS-level settings, and disk I/O configuration."
+---
+
+Performance tuning in Kafka is fundamentally a set of tradeoffs between throughput, latency, and durability. Increasing batch sizes improves throughput but adds end-to-end latency. Waiting for more replicas to acknowledge a write improves durability but adds latency. Disabling `fsync` can increase throughput by orders of magnitude but reduces your durability guarantees in a crash. Before touching any configuration, decide which of these properties matters most for your use case — then tune in that direction, one change at a time.
+
+## Understanding the Tradeoffs
+
+Every Kafka tuning decision involves at least one of three competing concerns:
+
+```
+        Throughput
+           /\
+          /  \
+         /    \
+        /      \
+       /________\
+  Latency      Durability
+```
+
+| Goal | What you sacrifice | Key levers |
+|---|---|---|
+| **Maximum throughput** | Higher end-to-end latency | Larger batches, compression, async sends |
+| **Minimum latency** | Lower throughput efficiency | `linger.ms=0`, `acks=1`, no compression |
+| **Maximum durability** | Higher latency and lower throughput | `acks=all`, `min.insync.replicas`, synchronous `flush` |
+
+Most production systems need a balance. A payment processing pipeline might accept higher latency for durability; a real-time analytics feed might prioritise throughput with relaxed durability.
+
+<Note>
+  Never blindly copy tuning values from a blog post. Your hardware, network, payload size, and consumer topology all affect the optimal settings. Always benchmark on your own infrastructure.
+</Note>
+
+## Producer Tuning for Throughput
+
+The producer accumulates records into batches before sending them to the broker. Larger batches mean fewer network round trips, which directly improves throughput.
+
+### Key Throughput Parameters
+
+| Parameter | Default | Tuned for throughput | Explanation |
+|---|---|---|---|
+| `linger.ms` | `0` | `20` | Time the producer waits to fill a batch before sending. `0` sends immediately; `20` allows more records to accumulate. |
+| `batch.size` | `16384` (16 KB) | `65536`–`131072` | Maximum bytes per batch per partition. Larger values reduce request overhead. |
+| `compression.type` | `none` | `lz4` | Compresses batches before sending. `lz4` gives good compression ratios at low CPU cost. |
+| `buffer.memory` | `33554432` (32 MB) | `67108864` (64 MB) | Total memory the producer uses to buffer records. Increase if producers block on `send()`. |
+| `max.in.flight.requests.per.connection` | `5` | `5` (with idempotence) | How many unacknowledged requests can be in-flight. Keep at `5` when `enable.idempotence=true`. |
+| `acks` | `1` | `1` or `all` | `1` = leader acknowledges; `all` = all in-sync replicas acknowledge. |
+| `enable.idempotence` | `false` | `true` | Guarantees exactly-once delivery per partition. Requires `acks=all`. |
+
+```properties
+# producer.properties — optimised for high throughput
+linger.ms=20
+batch.size=131072
+compression.type=lz4
+buffer.memory=67108864
+max.in.flight.requests.per.connection=5
+enable.idempotence=true
+acks=all
+```
+
+### Compression Type Comparison
+
+| Codec | Compression ratio | CPU cost | Best for |
+|---|---|---|---|
+| `none` | None | None | Low-volume or already-compressed payloads |
+| `gzip` | High | High | Archival or batch-heavy workloads where CPU is available |
+| `snappy` | Medium | Low | General-purpose; good default |
+| `lz4` | Medium | Very low | High-throughput pipelines where latency matters |
+| `zstd` | High | Medium | Best ratio per CPU cycle on modern hardware |
+
+## Producer Tuning for Low Latency
+
+When you need messages delivered to the broker as fast as possible, configure the producer to send immediately without waiting to batch:
+
+```properties
+# producer.properties — optimised for low latency
+linger.ms=0
+acks=1
+compression.type=none
+batch.size=16384
+max.block.ms=5000
+```
+
+<Warning>
+  Using `acks=1` means the leader acknowledges the write before replication completes. If the leader crashes immediately after acknowledging, the message can be lost. Only use `acks=1` when occasional message loss is acceptable for your use case.
+</Warning>
+
+## Consumer Tuning
+
+Consumer throughput is limited by how much data each fetch request retrieves and how long the consumer waits before issuing another fetch.
+
+### Key Consumer Parameters
+
+| Parameter | Default | Tuned value | Explanation |
+|---|---|---|---|
+| `fetch.min.bytes` | `1` | `1048576` (1 MB) | Minimum data the broker must have before returning a fetch response. Higher values mean fewer, larger fetches. |
+| `fetch.max.wait.ms` | `500` | `500`–`1000` | Maximum time the broker waits to accumulate `fetch.min.bytes` before responding anyway. |
+| `max.partition.fetch.bytes` | `1048576` (1 MB) | `4194304` (4 MB) | Maximum bytes returned per partition per fetch request. |
+| `max.poll.records` | `500` | `1000`–`2000` | Maximum records returned by a single `poll()` call. |
+| `fetch.max.bytes` | `52428800` (50 MB) | `104857600` (100 MB) | Maximum total bytes returned by a single fetch (across all partitions). |
+
+```properties
+# consumer.properties — optimised for high throughput
+fetch.min.bytes=1048576
+fetch.max.wait.ms=500
+max.partition.fetch.bytes=4194304
+max.poll.records=2000
+fetch.max.bytes=104857600
+```
+
+<Note>
+  If your consumer processes records slowly (e.g. calling an external API per record), increasing `max.poll.records` will not help — the bottleneck is processing speed, not fetch size. Profile your consumer before tuning fetch parameters.
+</Note>
+
+## Broker Tuning
+
+Brokers serve both producers and consumers while simultaneously replicating data to follower replicas. Tuning broker thread pools and buffers improves throughput under concurrent load.
+
+```properties
+# Threads handling network I/O (accepting/reading from sockets)
+# Scale with the number of client connections
+num.network.threads=6
+
+# Threads handling disk I/O (log reads and writes)
+# Scale with the number of disks / partition count
+num.io.threads=16
+
+# Socket-level send and receive buffers — increase on high-throughput brokers
+socket.send.buffer.bytes=1048576
+socket.receive.buffer.bytes=1048576
+socket.request.max.bytes=104857600
+
+# Log flush — let the OS handle flushing for best performance
+# Only override if you need stronger crash guarantees
+# log.flush.interval.messages=10000
+# log.flush.interval.ms=1000
+```
+
+<Note>
+  Kafka is designed to rely on the OS page cache and file system for durability rather than calling `fsync` after every write. Leaving `log.flush.interval.messages` and `log.flush.interval.ms` at their defaults (OS-managed) gives significantly better throughput and is safe with a replication factor of 3 or more.
+</Note>
+
+## OS-Level Tuning
+
+Kafka's performance is tightly coupled to the operating system. On Linux, several kernel parameters are worth tuning on broker nodes.
+
+```bash
+# Increase socket send and receive buffer limits
+sysctl -w net.core.rmem_max=134217728
+sysctl -w net.core.wmem_max=134217728
+sysctl -w net.core.rmem_default=134217728
+sysctl -w net.core.wmem_default=134217728
+
+# Use deadline or noop I/O scheduler for SSDs
+# (mq-deadline on newer kernels with NVMe)
+echo deadline > /sys/block/sda/queue/scheduler
+
+# Disable swap — Kafka depends on the OS page cache;
+# swapping kills latency and throughput
+swapoff -a
+# Make permanent:
+# sysctl -w vm.swappiness=1
+
+# Increase the open file descriptor limit — each partition,
+# consumer connection, and network socket consumes one fd
+ulimit -n 100000
+# Persist in /etc/security/limits.conf:
+# kafka soft nofile 100000
+# kafka hard nofile 100000
+
+# Set vm.dirty_ratio to allow more dirty pages before blocking writes
+sysctl -w vm.dirty_ratio=80
+sysctl -w vm.dirty_background_ratio=5
+```
+
+Make these settings permanent by adding them to `/etc/sysctl.conf` or a drop-in file in `/etc/sysctl.d/`.
+
+## Disk and Storage
+
+Kafka's log storage performance is the most significant hardware bottleneck for write-heavy clusters.
+
+<CardGroup cols={2}>
+  <Card title="Use SSDs" icon="bolt">
+    SSDs dramatically reduce write latency compared to spinning disks. NVMe drives are even better. For most production clusters an SSD is the single highest-leverage hardware upgrade you can make.
+  </Card>
+  <Card title="Dedicated Disks" icon="hard-drive">
+    Mount Kafka's `log.dirs` on a dedicated disk or volume separate from the OS and application files. This prevents OS writes from competing with Kafka's I/O and makes I/O profiling much simpler.
+  </Card>
+  <Card title="RAID-10 for Spinning Disks" icon="server">
+    If you must use spinning disks, RAID-10 (mirrored stripes) gives the best combination of throughput and redundancy. Avoid RAID-5 or RAID-6 — their write penalty is severe under Kafka's sequential write pattern.
+  </Card>
+  <Card title="Multiple Log Directories" icon="folder-open">
+    Set `log.dirs` to a comma-separated list of paths across multiple disks. Kafka distributes partition replicas across the listed directories, multiplying I/O throughput linearly with the number of disks.
+  </Card>
+</CardGroup>
+
+```properties
+# Use multiple disks for parallel I/O
+log.dirs=/data/kafka-logs-1,/data/kafka-logs-2,/data/kafka-logs-3
+```
+
+## Benchmarking
+
+Before and after every tuning change, run Kafka's built-in performance tests to measure the actual impact. Always benchmark on your own hardware with payloads representative of your real workload.
+
+### Producer Performance Test
+
+```bash
+bin/kafka-producer-perf-test.sh \
+  --topic perf-test \
+  --num-records 1000000 \
+  --record-size 1000 \
+  --throughput -1 \
+  --producer-props bootstrap.servers=localhost:9092 \
+    acks=1 \
+    linger.ms=20 \
+    batch.size=131072 \
+    compression.type=lz4
+```
+
+Example output:
+
+```
+999999 records sent, 245678.9 records/sec (234.2 MB/sec),
+2.5 ms avg latency, 215.0 ms max latency,
+1 ms 50th, 5 ms 95th, 18 ms 99th, 72 ms 99.9th.
+```
+
+### Consumer Performance Test
+
+```bash
+bin/kafka-consumer-perf-test.sh \
+  --bootstrap-server localhost:9092 \
+  --topic perf-test \
+  --messages 1000000 \
+  --threads 1
+```
+
+Example output:
+
+```
+start.time            end.time              data.consumed.in.MB  MB.sec  nMsg.sec
+2024-01-15 10:00:00   2024-01-15 10:00:04   953.67               238.4   250107.3
+```
+
+### Throughput Scaling Test
+
+Run the producer test with increasing `--throughput` values (records/sec) to find your broker's saturation point:
+
+```bash
+for throughput in 50000 100000 200000 -1; do
+  echo "=== Testing throughput: $throughput ==="
+  bin/kafka-producer-perf-test.sh \
+    --topic perf-test \
+    --num-records 500000 \
+    --record-size 1000 \
+    --throughput $throughput \
+    --producer-props bootstrap.servers=localhost:9092
+done
+```
+
+<Tip>
+  Always benchmark before and after each change, and change only one parameter at a time. Kafka has dozens of interacting settings — changing multiple at once makes it impossible to know which change caused which effect. Keep a log of each test's configuration and results.
+</Tip>

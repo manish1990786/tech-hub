@@ -1,0 +1,383 @@
+---
+title: "Apache Kafka FAQ: Common Questions Answered"
+sidebarTitle: "FAQ"
+description: "Answers to the most common Apache Kafka questions covering partitions, consumers, ordering, retention, exactly-once semantics, and cluster sizing."
+---
+
+Apache Kafka has a reputation for being powerful but nuanced — and that means a lot of the same questions come up again and again as teams adopt it. This page collects the most frequently asked questions about Kafka, from partition sizing and consumer lag to exactly-once delivery and cluster health. Whether you're just getting started or tuning a production cluster, you'll find direct, actionable answers below.
+
+<AccordionGroup>
+
+  <Accordion title="How many partitions should I use?">
+    The right partition count depends on your throughput requirements and the number of consumers you plan to run.
+
+    **Rule of thumb:** aim for **1–3 partitions per broker** as a starting baseline, then size upward based on your peak throughput divided by the per-partition throughput your brokers can sustain. On well-tuned hardware, a single partition typically handles **10–100 MB/s** of sequential writes.
+
+    Key constraints to keep in mind:
+
+    - **Consumer parallelism is capped by partition count.** The maximum number of active consumers in a single consumer group equals the number of partitions. Extra consumers beyond that number sit idle.
+    - **You can increase partitions but you cannot decrease them.** Kafka allows you to add partitions to an existing topic at any time with `kafka-topics.sh --alter`, but there is no built-in way to reduce the partition count. Plan conservatively and scale up rather than starting with an arbitrarily large number.
+
+    <Tip>
+      If you're unsure, start with a modest number (e.g. 6–12 for a small cluster) and increase as you measure actual throughput. Adding partitions later is straightforward; removing them is not.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="What happens if a consumer is slower than the producer?">
+    When consumers can't keep up with producers, **consumer lag** accumulates — the gap between the latest produced offset and the last committed consumer offset grows over time.
+
+    Kafka does not block the producer or drop messages. Instead, messages are retained on disk according to the topic's retention policy (`retention.ms` or `retention.bytes`). This is one of Kafka's key advantages over traditional message queues: backpressure doesn't cascade to producers.
+
+    **How to resolve consumer lag:**
+
+    | Approach | When to use |
+    |---|---|
+    | Add more consumers (up to the partition count) | Processing is CPU-bound and parallelizable |
+    | Optimize consumer processing logic | Processing is inefficient or blocking |
+    | Increase `fetch.max.bytes` and `max.poll.records` | Consumer batching is undersized |
+    | Increase `retention.ms` | You need more time to catch up before messages expire |
+
+    <Warning>
+      If lag grows until messages expire before they are processed, your consumer will miss records. Monitor lag with tools like `kafka-consumer-groups.sh --describe` or a metrics platform and alert before it becomes critical.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="How do I guarantee message ordering?">
+    **Kafka guarantees ordering within a partition, not across partitions.**
+
+    To ensure that related messages are processed in order, use a **partition key**. Kafka hashes the key and routes all messages with the same key to the same partition, preserving their insertion order.
+
+    ```java
+    // Java producer example — route by customer ID
+    producer.send(new ProducerRecord<>("orders", customerId, orderPayload));
+    ```
+
+    ```python
+    # Python producer example — route by sensor ID
+    producer.send("sensor-data", key=sensor_id.encode(), value=payload)
+    ```
+
+    **For strict global ordering** across all messages, use a **single-partition topic**. Be aware that this eliminates consumer parallelism — only one consumer in a group will process messages at a time.
+
+    <Info>
+      Even within a partition, ordering can break if you retry failed sends without idempotence enabled. Set `enable.idempotence=true` on the producer to prevent duplicate or out-of-order delivery on retries.
+    </Info>
+  </Accordion>
+
+  <Accordion title="What is the difference between a Kafka topic and a queue?">
+    Kafka topics and traditional message queues (e.g. RabbitMQ, ActiveMQ, SQS) look similar on the surface but behave very differently.
+
+    | | Kafka Topic | Traditional Queue |
+    |---|---|---|
+    | **Storage** | Persistent, append-only log | Usually in-memory or short-lived |
+    | **Message deletion** | Retained until expiry or compaction | Deleted on acknowledgment |
+    | **Multiple readers** | ✅ Many consumer groups, independently | ❌ Each message consumed once |
+    | **Replay** | ✅ Rewind offsets to re-read | ❌ Not typically supported |
+    | **Ordering** | Per-partition | Often FIFO within the queue |
+
+    Because Kafka topics are **persistent, replayable logs**, multiple independent consumer groups can each read the same topic from any offset — one group powering a real-time dashboard, another feeding a data warehouse, and a third driving alerting, all from the same stream of records.
+
+    <Note>
+      The replayability of Kafka topics is particularly useful for debugging and for bootstrapping new downstream consumers — they can start from the beginning of the log and catch up to the present without any changes to producers.
+    </Note>
+  </Accordion>
+
+  <Accordion title="Can I delete a message from Kafka?">
+    **You cannot delete individual messages from a Kafka topic.** The log is append-only by design.
+
+    You do have several options depending on your use case:
+
+    1. **Wait for retention to expire.** Messages are automatically removed once they exceed `retention.ms` (time-based) or `retention.bytes` (size-based).
+
+    2. **Use log compaction with a tombstone record.** On compacted topics, publishing a message with a given key and a `null` value marks it as a tombstone. The compaction process will eventually remove all previous records for that key.
+       ```bash
+       # Publish a tombstone via console producer
+       echo "my-key:" | kafka-console-producer.sh \
+         --topic my-topic \
+         --property "parse.key=true" \
+         --property "key.separator=:"
+       ```
+
+    3. **Temporarily lower `retention.ms`.** You can use `kafka-configs.sh` to reduce a topic's retention period so that old data expires quickly, then restore the original value.
+       ```bash
+       # Reduce retention to 1 second (use with caution!)
+       kafka-configs.sh --bootstrap-server localhost:9092 \
+         --entity-type topics --entity-name my-topic \
+         --alter --add-config retention.ms=1000
+       ```
+
+    <Warning>
+      Lowering `retention.ms` is irreversible for already-expired messages. Tread carefully in production — announce the window to all consumer teams first.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="How do I replay messages from the beginning?">
+    There are two common ways to replay messages, depending on whether you want to reset a consumer group or do a one-time read.
+
+    **Option 1 — Reset an existing consumer group offset:**
+    ```bash
+    kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+      --group my-consumer-group \
+      --topic my-topic \
+      --reset-offsets --to-earliest \
+      --execute
+    ```
+    The group will start consuming from the earliest retained message on its next poll.
+
+    **Option 2 — One-time replay with the console consumer:**
+    ```bash
+    kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+      --topic my-topic \
+      --from-beginning
+    ```
+    This uses a temporary consumer and does not affect any existing consumer group's committed offsets.
+
+    <Tip>
+      You can also reset to a specific offset, timestamp, or offset-shift using other `--reset-offsets` options such as `--to-offset`, `--to-datetime`, or `--shift-by`.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="What does 'under-replicated partitions' mean?">
+    A partition is **under-replicated** when the number of in-sync replicas (ISR) is less than the configured replication factor. In other words, not all replica copies of the partition are caught up and available.
+
+    This typically means:
+    - A broker has gone down or is restarting
+    - A broker is under heavy load and its replicas are falling behind
+    - There is a network issue between brokers
+
+    **Check for under-replicated partitions:**
+    ```bash
+    kafka-topics.sh --bootstrap-server localhost:9092 \
+      --describe --under-replicated-partitions
+    ```
+
+    If this command returns output, investigate the broker logs on the lagging replica. Once the broker is healthy and catches up, partitions will re-join the ISR and the alert should clear.
+
+    <Warning>
+      If `min.insync.replicas` is set and ISR drops below it, producers using `acks=all` will receive `NOT_ENOUGH_REPLICAS` errors. Prioritize restoring affected brokers quickly.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="What is Kafka's throughput limit?">
+    Kafka is built for high throughput. A single broker on commodity hardware can easily sustain **1 million messages per second** for small messages, and hundreds of MB/s for larger payloads.
+
+    **Real-world throughput is limited by:**
+
+    | Bottleneck | Symptom | Remedy |
+    |---|---|---|
+    | Disk I/O | High `%iowait`, slow flush times | Use SSDs, increase `num.io.threads` |
+    | Network bandwidth | NIC saturation | Add brokers, enable compression |
+    | Consumer processing | Growing lag | Parallelize consumers, optimize logic |
+    | JVM GC pauses | Latency spikes | Tune heap size, use G1GC or ZGC |
+
+    <Info>
+      Kafka's sequential disk access pattern means it can outperform many in-memory systems for sustained throughput. Enable producer compression (`compression.type=lz4` or `snappy`) to reduce both network and disk load simultaneously.
+    </Info>
+  </Accordion>
+
+  <Accordion title="How does Kafka handle exactly-once delivery?">
+    Kafka provides exactly-once semantics (EOS) at multiple layers:
+
+    **1. Idempotent producer (exactly-once per partition)**
+
+    Set `enable.idempotence=true` on the producer. Kafka assigns each producer a PID and sequence numbers, deduplicating retried sends on the broker side.
+    ```java
+    props.put("enable.idempotence", "true");
+    // acks=all and retries > 0 are set automatically
+    ```
+
+    **2. Transactions (exactly-once across partitions and topics)**
+
+    Use the transactional API to atomically write to multiple partitions:
+    ```java
+    producer.initTransactions();
+    producer.beginTransaction();
+    producer.send(new ProducerRecord<>("topic-a", key, value));
+    producer.send(new ProducerRecord<>("topic-b", key, value));
+    producer.commitTransaction(); // or producer.abortTransaction() on error
+    ```
+    Consumers must set `isolation.level=read_committed` to see only committed transactional messages.
+
+    **3. Kafka Streams (exactly-once end-to-end)**
+
+    ```java
+    props.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG,
+              StreamsConfig.EXACTLY_ONCE_V2);
+    ```
+
+    <Note>
+      `exactly_once_v2` (introduced in Kafka 2.5) is more efficient than the original `exactly_once` and is the recommended setting for new Kafka Streams applications.
+    </Note>
+  </Accordion>
+
+  <Accordion title="What is the replication factor and what should I use?">
+    The **replication factor** determines how many copies of each partition are stored across brokers. A replication factor of 3 means the partition leader plus two followers.
+
+    **Production recommendation: `replication.factor=3`**
+
+    Pair this with:
+    ```properties
+    # Broker-level default (or set per-topic)
+    default.replication.factor=3
+
+    # Require at least 2 replicas to acknowledge writes
+    min.insync.replicas=2
+
+    # Producer: wait for all ISR replicas
+    acks=all
+    ```
+
+    This combination means your cluster can lose one broker and still accept writes without data loss.
+
+    | Replication Factor | Brokers That Can Fail | Use Case |
+    |---|---|---|
+    | 1 | 0 | Development / throwaway data |
+    | 2 | 1 | Low-cost staging |
+    | 3 | 1 (with min.insync.replicas=2) | Production standard |
+
+    <Warning>
+      Never use `replication.factor=1` in production. A single broker failure will make those partitions permanently unavailable until the broker is restored.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Can Kafka be used as a database?">
+    Kafka is optimized for **high-throughput sequential writes and streaming consumption**, not the random-access, low-latency point lookups that relational or document databases provide.
+
+    That said, Kafka does have database-adjacent capabilities:
+
+    - **Log compaction** keeps the latest value for each key, effectively turning a compacted topic into a key-value store that external systems (like Kafka Streams state stores or ksqlDB tables) can materialize.
+    - **Kafka Streams** uses compacted changelog topics to back its RocksDB state stores, enabling stateful stream processing.
+
+    **What Kafka is not suited for:**
+    - OLTP workloads (random reads, updates, deletes by primary key)
+    - Complex join queries across many entities
+    - Low-latency key lookups (sub-millisecond)
+
+    <Info>
+      A common pattern is to use Kafka as the **source of truth for the event stream** and project that stream into a purpose-built store (PostgreSQL, Elasticsearch, Redis) for the query patterns your application needs.
+    </Info>
+  </Accordion>
+
+  <Accordion title="How do I handle schema changes?">
+    Schema evolution is one of the trickiest parts of operating Kafka in production. The recommended approach is to use **Confluent Schema Registry** (or a compatible alternative) and enforce compatibility rules.
+
+    **Recommended compatibility mode: `BACKWARD`**
+
+    In backward-compatible mode, new schema versions can be read by consumers using the previous schema version. This means:
+
+    - ✅ Add a new optional field with a default value
+    - ✅ Remove a field that has a default value
+    - ❌ Remove a required field
+    - ❌ Change the type of an existing field
+    - ❌ Rename a field
+
+    ```json
+    // Safe: adding a field with a default
+    {
+      "type": "record",
+      "name": "Order",
+      "fields": [
+        { "name": "orderId", "type": "string" },
+        { "name": "amount",  "type": "double" },
+        { "name": "currency", "type": "string", "default": "USD" }
+      ]
+    }
+    ```
+
+    <Tip>
+      Register schemas before deploying new producers. If a schema is rejected by the registry (incompatible change), the producer will fail at startup rather than silently corrupting data for consumers.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="What is a consumer group rebalance and when does it happen?">
+    A **rebalance** is the process by which Kafka redistributes partition assignments among all consumers in a consumer group. During a rebalance, consumption pauses across the entire group until assignments are finalized.
+
+    **Rebalances are triggered when:**
+    - A new consumer joins the group
+    - An existing consumer leaves cleanly (e.g. graceful shutdown)
+    - A consumer crashes or stops polling within `max.poll.interval.ms`
+    - A consumer heartbeat times out (exceeds `session.timeout.ms`)
+    - The partition count of a subscribed topic changes
+
+    **Minimizing rebalance disruption:**
+
+    Use the `CooperativeStickyAssignor`, which implements *incremental rebalancing* — only the partitions that need to move are revoked, rather than all partitions across all consumers.
+
+    ```java
+    props.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG,
+              CooperativeStickyAssignor.class.getName());
+    ```
+
+    Also tune these settings to reduce unnecessary rebalances:
+    ```properties
+    # Give consumers more time between polls before being considered dead
+    max.poll.interval.ms=600000
+
+    # Reduce batch size if processing per batch is slow
+    max.poll.records=500
+    ```
+
+    <Note>
+      Kafka 3.x introduces the new KIP-848 consumer group protocol (consumer heartbeat-based assignment), which eliminates stop-the-world rebalances entirely. Check your broker version to see if it is available.
+    </Note>
+  </Accordion>
+
+  <Accordion title="What is the difference between acks=1 and acks=all?">
+    The `acks` producer setting controls how many broker acknowledgments are required before a send is considered successful.
+
+    | Setting | Behavior | Risk |
+    |---|---|---|
+    | `acks=0` | No acknowledgment. Fire-and-forget. | Highest throughput; message loss on any error |
+    | `acks=1` | Leader broker acknowledges the write | Message lost if leader crashes before replicating |
+    | `acks=all` (or `-1`) | All in-sync replicas acknowledge | Strongest durability; lower throughput |
+
+    **`acks=1`** is the historical default and provides good throughput, but there is a window of data loss: if the partition leader crashes immediately after acknowledging but before followers have replicated, the message is lost.
+
+    **`acks=all`** should always be paired with `min.insync.replicas`:
+    ```properties
+    # Producer
+    acks=all
+
+    # Broker / topic
+    min.insync.replicas=2
+    ```
+    With this configuration, a write is only acknowledged once at least 2 replicas (including the leader) have durably stored it.
+
+    <Tip>
+      For any business-critical data, use `acks=all` with `enable.idempotence=true`. The small latency cost is almost always worth the durability guarantee.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="How do I check Kafka cluster health?">
+    A healthy Kafka cluster should satisfy three conditions at all times:
+
+    | Metric | Healthy Value | What a bad value means |
+    |---|---|---|
+    | `UnderReplicatedPartitions` | `0` | One or more brokers are down or lagging |
+    | `OfflinePartitionsCount` | `0` | A partition has no available leader — data is inaccessible |
+    | `ActiveControllerCount` | `1` | 0 = no controller; >1 = split-brain (both are bad) |
+
+    **Quick CLI health check:**
+    ```bash
+    # List any under-replicated partitions
+    kafka-topics.sh --bootstrap-server localhost:9092 \
+      --describe --under-replicated-partitions
+
+    # Check consumer group lag
+    kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+      --describe --group my-consumer-group
+    ```
+
+    **JMX metrics to monitor** (expose via Prometheus JMX exporter or similar):
+    ```
+    kafka.server:type=ReplicaManager,name=UnderReplicatedPartitions
+    kafka.controller:type=KafkaController,name=OfflinePartitionsCount
+    kafka.controller:type=KafkaController,name=ActiveControllerCount
+    ```
+
+    <Info>
+      For production clusters, integrate Kafka metrics into a monitoring platform (Prometheus + Grafana, Datadog, etc.) and set up alerting on `UnderReplicatedPartitions > 0` and `OfflinePartitionsCount > 0` so that you are notified before issues become outages.
+    </Info>
+  </Accordion>
+
+</AccordionGroup>

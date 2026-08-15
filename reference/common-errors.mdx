@@ -1,0 +1,523 @@
+---
+title: "Kafka Error Messages: Causes and Solutions"
+sidebarTitle: "Common Errors"
+description: "Diagnose and fix the most common Apache Kafka errors including LEADER_NOT_AVAILABLE, offset out of range, serialization errors, and connection refused."
+---
+
+When something goes wrong in a Kafka deployment the error messages can range from immediately obvious to cryptically unhelpful. This page catalogs the most common errors you'll encounter — organized by where they originate — with the likely cause and concrete steps to resolve each one. If you don't see your error here, the first place to look is always the broker log at `logs/server.log`.
+
+## Connection errors
+
+<AccordionGroup>
+
+  <Accordion title="Connection refused to localhost:9092">
+    **Cause:** The Kafka broker is either not running, or it is not listening on the address and port your client is trying to reach.
+
+    **How to fix:**
+
+    1. Verify the broker process is running:
+       ```bash
+       # Check for the Kafka process
+       ps aux | grep kafka
+
+       # Or check the port directly
+       ss -tlnp | grep 9092
+       ```
+
+    2. Confirm the `listeners` configuration in `server.properties` matches the address you're connecting to:
+       ```properties
+       # Example: listen on all interfaces
+       listeners=PLAINTEXT://0.0.0.0:9092
+       ```
+
+    3. Verify `advertised.listeners` includes the hostname or IP that clients use to reach the broker. This is the address brokers hand back to clients for subsequent connections:
+       ```properties
+       advertised.listeners=PLAINTEXT://your-broker-hostname:9092
+       ```
+
+    <Tip>
+      On a fresh install the broker may have exited silently due to a misconfigured `log.dirs` path or a port conflict. Check `logs/server.log` for the actual startup error.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="UNKNOWN_HOST: Failed to resolve kafka:9092">
+    **Cause:** DNS resolution failed for the hostname `kafka`. This is especially common in Docker or Kubernetes environments where the broker hostname is a service name that isn't visible from the client's network.
+
+    **How to fix:**
+
+    1. **Docker Compose:** Make sure both your Kafka broker and your client container are on the same Docker network, and that the service name in `docker-compose.yml` matches what you're using as the bootstrap server.
+       ```yaml
+       services:
+         kafka:
+           image: apache/kafka:latest
+           networks:
+             - kafka-net
+         my-app:
+           image: my-app:latest
+           networks:
+             - kafka-net
+           environment:
+             KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+       networks:
+         kafka-net:
+       ```
+
+    2. **Quick local test:** Use `--network host` to bypass Docker networking and connect directly to `localhost:9092`:
+       ```bash
+       docker run --rm --network host \
+         apache/kafka:latest \
+         kafka-topics.sh --bootstrap-server localhost:9092 --list
+       ```
+
+    3. **Kubernetes:** Use the full service DNS name: `kafka.namespace.svc.cluster.local:9092`.
+
+    <Note>
+      The `advertised.listeners` on the broker must resolve from the client's perspective — not just from inside the broker container. If the broker advertises `kafka:9092` but the client can't resolve `kafka`, the connection will fail even after the initial bootstrap succeeds.
+    </Note>
+  </Accordion>
+
+</AccordionGroup>
+
+## Producer errors
+
+<AccordionGroup>
+
+  <Accordion title="LEADER_NOT_AVAILABLE">
+    **Cause:** The partition leader is temporarily unavailable. This happens when a broker is restarting, experiencing a network hiccup, or when a brand-new topic is being created and the leader election hasn't completed yet.
+
+    This error is almost always **transient** — the partition leader is usually elected within a few seconds.
+
+    **How to fix:**
+
+    1. Increase `retries` and `retry.backoff.ms` on the producer so it waits and retries automatically:
+       ```properties
+       retries=10
+       retry.backoff.ms=500
+       ```
+
+    2. If the error persists (longer than ~30 seconds), check the broker logs for the affected partition:
+       ```bash
+       # Find which broker hosts the affected partition's leader
+       kafka-topics.sh --bootstrap-server localhost:9092 \
+         --describe --topic your-topic
+       ```
+       Then SSH to that broker and inspect `logs/server.log` for crash or election errors.
+
+    <Info>
+      When creating a new topic programmatically, add a short retry loop after creation before producing — leader election takes a moment.
+    </Info>
+  </Accordion>
+
+  <Accordion title="NOT_ENOUGH_REPLICAS (error code 19)">
+    **Cause:** The number of in-sync replicas (ISR) has fallen below `min.insync.replicas`. When a producer uses `acks=all`, Kafka requires at least `min.insync.replicas` brokers to acknowledge the write — if fewer are available, the write is rejected outright.
+
+    **How to fix:**
+
+    1. **Restore the failed broker(s).** This is the correct long-term fix. Once brokers rejoin and replicas catch up, ISR is restored and writes succeed normally.
+
+    2. While waiting for broker recovery, you can **temporarily reduce `min.insync.replicas`** — but understand that this reduces your durability guarantee:
+       ```bash
+       kafka-configs.sh --bootstrap-server localhost:9092 \
+         --entity-type topics --entity-name your-topic \
+         --alter --add-config min.insync.replicas=1
+       ```
+
+    3. Alternatively, do not produce until ISR is fully restored if data loss is unacceptable.
+
+    <Warning>
+      Reducing `min.insync.replicas` below your replication factor is a durability trade-off. Restore it to the original value as soon as your brokers are healthy.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="RecordTooLargeException">
+    **Cause:** The message you're trying to send exceeds one or more size limits. There are three limits that must all be large enough:
+
+    - `max.request.size` — producer-side limit (default: **1 MB**)
+    - `message.max.bytes` — broker-level limit (default: **1 MB**)
+    - `max.message.bytes` — per-topic override
+
+    **How to fix — increase all three limits consistently:**
+
+    ```properties
+    # Producer config
+    max.request.size=10485760        # 10 MB
+    ```
+
+    ```bash
+    # Broker config (server.properties)
+    message.max.bytes=10485760
+
+    # Or set per-topic
+    kafka-configs.sh --bootstrap-server localhost:9092 \
+      --entity-type topics --entity-name your-topic \
+      --alter --add-config max.message.bytes=10485760
+    ```
+
+    Also increase the consumer's `fetch.max.bytes` and `max.partition.fetch.bytes` to match, otherwise the consumer won't be able to fetch those large records:
+    ```properties
+    fetch.max.bytes=10485760
+    max.partition.fetch.bytes=10485760
+    ```
+
+    <Tip>
+      Before raising size limits, consider whether large payloads should be stored in object storage (S3, GCS) with only a reference key sent through Kafka — the "claim check" pattern.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="BufferExhaustedException: Failed to allocate memory within the configured max blocking time">
+    **Cause:** The producer's internal send buffer (`buffer.memory`, default **32 MB**) is full. This means records are being produced faster than the broker is accepting them. The producer blocks up to `max.block.ms` waiting for buffer space; when that timeout expires, it throws this exception.
+
+    **How to fix:**
+
+    1. **Increase `buffer.memory`** to give the producer more headroom to absorb bursts:
+       ```properties
+       buffer.memory=67108864   # 64 MB
+       ```
+
+    2. **Increase `max.block.ms`** to allow the producer to wait longer before giving up:
+       ```properties
+       max.block.ms=60000   # 60 seconds
+       ```
+
+    3. **Enable compression** to reduce the network bytes per record and increase effective throughput:
+       ```properties
+       compression.type=lz4
+       ```
+
+    4. **Scale up your Kafka cluster** if brokers are consistently saturated — the underlying issue is that brokers can't absorb writes fast enough.
+
+    <Warning>
+      Increasing buffer sizes is a band-aid. If this error is occurring regularly, profile the end-to-end produce path to find where the bottleneck lies (network, broker disk I/O, replication).
+    </Warning>
+  </Accordion>
+
+</AccordionGroup>
+
+## Consumer errors
+
+<AccordionGroup>
+
+  <Accordion title="OffsetOutOfRangeException">
+    **Cause:** The committed offset your consumer is trying to resume from no longer exists in the topic. This happens in two scenarios:
+
+    - The offset is **before the log start offset** — messages at that position have been deleted by retention or log compaction
+    - The offset is **after the log end offset** — the committed offset is ahead of any produced messages (rare, usually caused by a manual offset reset)
+
+    **How to fix:**
+
+    Set `auto.offset.reset` to control what the consumer does when its offset is out of range:
+
+    ```properties
+    # Jump to the earliest available offset (most common fix)
+    auto.offset.reset=earliest
+
+    # Or jump to the latest (skip missed messages)
+    auto.offset.reset=latest
+    ```
+
+    To manually reset a consumer group's offsets:
+    ```bash
+    kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+      --group your-group \
+      --topic your-topic \
+      --reset-offsets --to-earliest \
+      --execute
+    ```
+
+    <Note>
+      `auto.offset.reset` only applies when there is **no committed offset** for a partition, or when the committed offset is out of range. It does not reset existing valid offsets.
+    </Note>
+  </Accordion>
+
+  <Accordion title="CommitFailedException: Commit cannot be completed since the group has already rebalanced">
+    **Cause:** Your consumer took too long between calls to `poll()`. Kafka uses the interval between polls to detect dead consumers — if `max.poll.interval.ms` elapses without a poll, the broker evicts the consumer from the group and triggers a rebalance. By the time the consumer tries to commit its offsets, it's no longer a member of the group.
+
+    **How to fix:**
+
+    1. **Increase `max.poll.interval.ms`** to give your consumer more time to process each batch:
+       ```properties
+       max.poll.interval.ms=600000   # 10 minutes
+       ```
+
+    2. **Reduce `max.poll.records`** so each poll fetches a smaller batch and processing finishes faster:
+       ```properties
+       max.poll.records=100
+       ```
+
+    3. **Move heavy processing off the poll thread.** Hand records to a thread pool and call `poll()` on a tight loop to maintain the heartbeat:
+       ```java
+       while (running) {
+           ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
+           executor.submit(() -> process(records));
+       }
+       ```
+
+    <Warning>
+      If you move processing to a background thread, you must handle offset commits carefully — only commit after processing is confirmed complete, not just after handoff to the executor.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="WakeupException">
+    **Cause:** `consumer.wakeup()` was called on the consumer — this is an intentional, thread-safe way to interrupt a blocking `poll()` call. It is most commonly used in shutdown hooks to stop a consumer loop cleanly from another thread.
+
+    **This is expected behavior**, not an error in the traditional sense.
+
+    **Correct shutdown pattern:**
+    ```java
+    // In a shutdown hook or signal handler
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> consumer.wakeup()));
+
+    // In the poll loop
+    try {
+        while (true) {
+            ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
+            process(records);
+        }
+    } catch (WakeupException e) {
+        // Expected on shutdown — do not log as an error
+    } finally {
+        consumer.commitSync();   // Commit final offsets
+        consumer.close();        // Release resources and notify group coordinator
+    }
+    ```
+
+    <Tip>
+      Always close the consumer in the `finally` block. This sends a `LeaveGroup` request immediately, triggering a rebalance right away rather than waiting for the session timeout.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="org.apache.kafka.common.errors.SerializationException">
+    **Cause:** A message could not be deserialized by the consumer. The two most common causes are:
+
+    1. The consumer's `key.deserializer` or `value.deserializer` doesn't match the format the producer used
+    2. The message uses Confluent Schema Registry wire format (starts with a magic byte `0x00`) but the consumer isn't using an `AvroDeserializer` / `JsonSchemaDeserializer`
+
+    **How to fix:**
+
+    1. Verify your consumer deserializer configuration matches what the producer used:
+       ```properties
+       # If producer used StringSerializer:
+       value.deserializer=org.apache.kafka.common.serialization.StringDeserializer
+
+       # If producer used Schema Registry Avro:
+       value.deserializer=io.confluent.kafka.serializers.KafkaAvroDeserializer
+       schema.registry.url=http://schema-registry:8081
+       ```
+
+    2. If you don't know what format a topic contains, inspect a raw message:
+       ```bash
+       kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+         --topic your-topic \
+         --from-beginning \
+         --max-messages 1 \
+         --property print.key=true
+       ```
+
+    3. **Handle bad records gracefully** instead of crashing the consumer with a `DeserializationExceptionHandler`:
+       ```java
+       props.put(StreamsConfig.DEFAULT_DESERIALIZATION_EXCEPTION_HANDLER_CLASS_CONFIG,
+                 LogAndContinueExceptionHandler.class);
+       ```
+
+    <Note>
+      In Schema Registry environments, verify the schema subject name convention. By default it is `<topic>-value`. If the producer registered the schema under a different subject, the consumer won't find it.
+    </Note>
+  </Accordion>
+
+</AccordionGroup>
+
+## Broker and cluster errors
+
+<AccordionGroup>
+
+  <Accordion title="UnderReplicatedPartitions > 0">
+    **Cause:** One or more partitions have fewer in-sync replicas than the configured replication factor. This usually means a broker is down, has just restarted and is catching up, or is struggling under high load.
+
+    **How to diagnose:**
+    ```bash
+    # Identify which partitions are affected
+    kafka-topics.sh --bootstrap-server localhost:9092 \
+      --describe --under-replicated-partitions
+
+    # Check which brokers are in the ISR for a given topic
+    kafka-topics.sh --bootstrap-server localhost:9092 \
+      --describe --topic your-topic
+    ```
+
+    **How to fix:**
+    1. Check broker logs (`logs/server.log`) on the lagging broker for errors (OOM, disk full, network errors)
+    2. Verify network connectivity between brokers
+    3. Check disk space — a full disk will halt log writes and cause a broker to fall out of ISR:
+       ```bash
+       df -h /var/kafka-logs
+       ```
+    4. Once the issue is resolved, replicas will automatically re-sync and rejoin the ISR
+
+    <Warning>
+      A sustained `UnderReplicatedPartitions > 0` means you are operating without full redundancy. If another broker fails during this period you may face data loss or partition unavailability.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="ActiveControllerCount = 0 or > 1">
+    **Cause:** The Kafka controller is the broker responsible for partition leadership elections and cluster metadata. `ActiveControllerCount` should always be exactly **1**.
+
+    - **`ActiveControllerCount = 0`**: No controller has been elected. No leadership changes can happen, meaning failed leaders can't be replaced. New topics can't be created.
+    - **`ActiveControllerCount > 1`**: Split-brain — multiple brokers believe they are the controller. This is a serious state that can lead to conflicting metadata.
+
+    **How to fix:**
+
+    For **ZooKeeper-based** clusters:
+    ```bash
+    # Check ZooKeeper connectivity from each broker
+    echo ruok | nc zookeeper-host 2181
+
+    # Check the current controller registration in ZooKeeper
+    zookeeper-shell.sh zookeeper-host:2181 get /controller
+    ```
+
+    For **KRaft-based** clusters (Kafka 3.x+):
+    ```bash
+    # Check the KRaft quorum status
+    kafka-metadata-quorum.sh --bootstrap-server localhost:9092 describe --status
+    ```
+
+    Restart any brokers stuck in an inconsistent state after verifying ZooKeeper/KRaft quorum health.
+
+    <Warning>
+      `ActiveControllerCount > 1` is a critical incident. Isolate and restart the extra controller broker as soon as possible to prevent metadata corruption.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="java.io.IOException: No space left on device">
+    **Cause:** The disk hosting Kafka's log directory (`log.dirs`) has run out of space. Kafka cannot write new log segments and the broker will stop accepting produce requests.
+
+    **Immediate triage:**
+    ```bash
+    # Check disk usage on Kafka log directories
+    df -h /var/kafka-logs
+
+    # Find the largest topics consuming space
+    du -sh /var/kafka-logs/* | sort -rh | head -20
+    ```
+
+    **How to fix:**
+
+    1. **Reduce retention** to free space quickly:
+       ```bash
+       # Reduce retention to 1 hour temporarily
+       kafka-configs.sh --bootstrap-server localhost:9092 \
+         --entity-type topics --entity-name your-large-topic \
+         --alter --add-config retention.ms=3600000
+       ```
+
+    2. **Set a `retention.bytes` cap** on the largest topics to prevent this recurring:
+       ```bash
+       kafka-configs.sh --bootstrap-server localhost:9092 \
+         --entity-type topics --entity-name your-large-topic \
+         --alter --add-config retention.bytes=10737418240   # 10 GB
+       ```
+
+    3. **Trigger immediate log cleanup** by setting `delete.retention.ms=0` temporarily, or wait for the background log cleaner to run.
+
+    4. **Add more disk** to the broker, or add a new broker and rebalance partitions onto it.
+
+    5. **Delete unused topics** that are no longer needed:
+       ```bash
+       kafka-topics.sh --bootstrap-server localhost:9092 \
+         --delete --topic unused-topic
+       ```
+
+    <Warning>
+      A broker with a full disk will halt writes for all partitions it leads — not just the large topic causing the problem. Treat a full disk as a production incident and resolve it immediately.
+    </Warning>
+  </Accordion>
+
+</AccordionGroup>
+
+## Kafka Streams errors
+
+<AccordionGroup>
+
+  <Accordion title="TaskAssignmentException: Unable to assign standby tasks">
+    **Cause:** Kafka Streams couldn't assign the configured number of standby replicas (`num.standby.replicas`) because there aren't enough application instances or stream threads to host them. Standby tasks need to run on a different instance than the active task they mirror.
+
+    **How to fix:**
+
+    1. **Add more application instances.** If you're running a single instance, you need at least two to have any standby tasks:
+       ```bash
+       # Start a second instance of your Streams application
+       java -jar my-streams-app.jar
+       ```
+
+    2. **Increase `num.stream.threads`** within a single instance to create more thread capacity:
+       ```java
+       props.put(StreamsConfig.NUM_STREAM_THREADS_CONFIG, 4);
+       ```
+
+    3. **Reduce `num.standby.replicas`** if you don't need the failover speed benefit:
+       ```java
+       props.put(StreamsConfig.NUM_STANDBY_REPLICAS_CONFIG, 0);
+       ```
+
+    <Info>
+      Standby tasks exist to speed up failover — they keep a warm copy of the state store so that when an active task fails, the standby can take over without replaying the entire changelog topic. They are optional but recommended for latency-sensitive applications.
+    </Info>
+  </Accordion>
+
+  <Accordion title="StreamsException: stream-thread [...] encountered fatal error">
+    **Cause:** An unhandled exception occurred inside the stream processing topology. Common causes include:
+
+    - A deserialization failure on a malformed or unexpected message
+    - A `NullPointerException` or application logic error in a `Processor`, `Transformer`, or lambda
+    - An unrecoverable Kafka client error underneath the Streams layer
+
+    By default, a fatal error shuts down the entire Streams application instance.
+
+    **How to fix:**
+
+    1. **Register a `StreamUncaughtExceptionHandler`** to control what happens on thread death:
+       ```java
+       streams.setUncaughtExceptionHandler(exception -> {
+           log.error("Fatal Streams error", exception);
+           // REPLACE_THREAD: restart this thread instead of shutting down the app
+           return StreamThreadExceptionResponse.REPLACE_THREAD;
+       });
+       ```
+
+    2. **Handle deserialization errors gracefully** to skip or route bad records instead of crashing:
+       ```java
+       props.put(
+           StreamsConfig.DEFAULT_DESERIALIZATION_EXCEPTION_HANDLER_CLASS_CONFIG,
+           LogAndContinueExceptionHandler.class
+       );
+       ```
+
+    3. **Route bad records to a dead letter topic** using a custom handler:
+       ```java
+       public class DeadLetterExceptionHandler implements DeserializationExceptionHandler {
+           @Override
+           public DeserializationHandlerResponse handle(ProcessorContext context,
+                   ConsumerRecord<byte[], byte[]> record, Exception exception) {
+               context.forward(record.key(), record.value(),
+                               To.child("dead-letter-sink"));
+               return DeserializationHandlerResponse.CONTINUE;
+           }
+       }
+       ```
+
+    <Tip>
+      Always inspect the full stack trace in the logs. The `StreamsException` wrapper often contains the root cause several levels deep — look for the innermost `Caused by:` clause to find the actual problem.
+    </Tip>
+  </Accordion>
+
+</AccordionGroup>
+
+---
+
+<Tip>
+  When debugging any unexpected Kafka behavior, **start with the broker logs** at `logs/server.log`. The broker usually logs the root cause of errors that surface as cryptic client-side exceptions. Set `log4j.logger.kafka=INFO` to get useful output without overwhelming verbosity.
+</Tip>
+
+<Note>
+  Kafka's full list of error codes and their descriptions is documented in the official protocol specification: [kafka.apache.org/protocol.html#protocol_error_codes](https://kafka.apache.org/protocol.html#protocol_error_codes)
+</Note>

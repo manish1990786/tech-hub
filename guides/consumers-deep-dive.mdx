@@ -1,0 +1,345 @@
+---
+title: "Mastering Kafka Consumers: Offsets, Commits, and Rebalancing"
+sidebarTitle: "Consumers Deep Dive"
+description: "Deep-dive into Kafka consumer internals: offset management, commit strategies, partition rebalancing, graceful shutdown, and reading from specific offsets."
+---
+
+Kafka consumers look deceptively simple — call `poll()` in a loop and process records. In practice, the consumer client manages a heartbeat thread, a group coordinator protocol, an offset store, and a fetch pipeline all at the same time. Understanding these moving parts is the difference between an application that handles failures gracefully and one that silently loses or duplicates messages under pressure.
+
+## The Consumer Internals
+
+Every `KafkaConsumer` instance is composed of several collaborating components that run across multiple threads.
+
+<AccordionGroup>
+  <Accordion title="Fetcher">
+    The `Fetcher` is responsible for building `FetchRequest` messages and parsing the `FetchResponse` objects returned by brokers. It maintains a queue of pre-fetched `ConsumerRecords` to hand back from `poll()`. The amount of data it fetches in one go is controlled by `fetch.min.bytes`, `fetch.max.wait.ms`, and `max.partition.fetch.bytes`.
+  </Accordion>
+  <Accordion title="ConsumerCoordinator">
+    The `ConsumerCoordinator` manages the consumer's membership in a consumer group. It communicates with the group coordinator broker to join the group, receive a partition assignment, send periodic heartbeats, and participate in rebalances. It also handles offset commits by writing to the `__consumer_offsets` internal topic.
+  </Accordion>
+  <Accordion title="HeartbeatThread">
+    The `HeartbeatThread` runs in the background and sends `HeartbeatRequest` messages to the group coordinator at the interval specified by `heartbeat.interval.ms` (default 3 s). If the broker does not receive a heartbeat within `session.timeout.ms` (default 45 s), it considers the consumer dead and triggers a rebalance. This thread is separate from your application thread so that a slow `poll()` processing loop does not silently cause the consumer to drop out of the group — instead `max.poll.interval.ms` (default 5 min) handles that.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  All three components run within a single `KafkaConsumer` object which is **not thread-safe**. Never share a consumer instance across application threads. If you need concurrent processing, create one consumer per thread or use a handoff queue pattern.
+</Note>
+
+## Offset Management
+
+Kafka tracks progress through a topic using numeric offsets. There are three distinct offsets you need to reason about for each partition.
+
+| Offset | Description |
+|---|---|
+| **Current offset** | The offset of the next record `poll()` will return. Advanced automatically as you consume. |
+| **Committed offset** | The last offset your application explicitly saved to `__consumer_offsets`. Survives restarts. |
+| **Log-end offset (LEO)** | The offset of the next record the **producer** will write. Set by the broker. |
+| **Consumer lag** | `log-end-offset − committed-offset`. How far behind your consumer is. |
+
+```
+Partition 0
+─────────────────────────────────────────────────────▶
+ 0   1   2   3   4   5   6   7   8   9  10  11  12
+                 ▲               ▲               ▲
+          committed          current            LEO
+          offset=3           offset=7        offset=12
+
+Consumer lag = 12 − 3 = 9  (5 uncommitted + 4 unfetched)
+```
+
+## Commit Strategies
+
+How and when you commit offsets determines the delivery semantics your application provides.
+
+### Auto Commit
+
+With `enable.auto.commit=true` (the default), the consumer commits offsets automatically every `auto.commit.interval.ms` (default 5 s) during `poll()`. This is convenient but has a pitfall: if your application processes a batch and then crashes before the next auto-commit fires, those records will be re-delivered after restart — even though your application already processed them.
+
+```java title="AutoCommitConsumer.java"
+props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, true);
+props.put(ConsumerConfig.AUTO_COMMIT_INTERVAL_MS_CONFIG, 5000);
+```
+
+<Warning>
+  Auto commit does **not** guarantee at-least-once semantics by itself. If `poll()` returns a batch and the JVM crashes before processing finishes — but after the auto-commit timer fired — those records are silently skipped. For reliable delivery, manage commits manually.
+</Warning>
+
+### Manual Commit: commitSync vs commitAsync
+
+<Tabs>
+  <Tab title="commitSync">
+    Blocks the application thread until the broker acknowledges the commit. Safe for at-least-once guarantees, but adds latency.
+
+    ```java title="CommitSyncExample.java"
+    props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+    KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
+    consumer.subscribe(List.of("orders"));
+
+    while (true) {
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
+        for (ConsumerRecord<String, String> record : records) {
+            process(record);
+        }
+        // Commit after successfully processing the entire batch
+        try {
+            consumer.commitSync();
+        } catch (CommitFailedException e) {
+            log.error("Commit failed", e);
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="commitAsync">
+    Non-blocking. The commit request is sent and your loop continues immediately. Failures are reported via a callback and are **not** retried automatically (to avoid committing a stale offset after a later commit succeeded).
+
+    ```java title="CommitAsyncExample.java"
+    consumer.commitAsync((offsets, exception) -> {
+        if (exception != null) {
+            log.error("Async commit failed for offsets {}", offsets, exception);
+        }
+    });
+    ```
+  </Tab>
+  <Tab title="Batch Commit Pattern">
+    Commit after every batch with `commitAsync` for speed, and fall back to `commitSync` on shutdown to guarantee the final offsets are persisted.
+
+    ```java title="BatchCommitPattern.java"
+    try {
+        while (running) {
+            ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
+            for (ConsumerRecord<String, String> record : records) {
+                process(record);
+            }
+            consumer.commitAsync(); // fast path
+        }
+        consumer.commitSync(); // safe path on clean shutdown
+    } catch (Exception e) {
+        log.error("Unexpected error", e);
+    } finally {
+        consumer.close(); // commitSync is called internally on close()
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### commitSync with Retry Logic
+
+For critical pipelines where you cannot afford to lose a commit, wrap `commitSync` in a retry loop with exponential back-off:
+
+```java title="CommitSyncWithRetry.java"
+private void commitWithRetry(KafkaConsumer<?, ?> consumer, int maxRetries) {
+    int attempt = 0;
+    while (attempt < maxRetries) {
+        try {
+            consumer.commitSync();
+            return; // success
+        } catch (RetriableCommitFailedException e) {
+            attempt++;
+            long backoffMs = 100L * (1L << attempt); // 200, 400, 800 ms …
+            log.warn("Commit attempt {} failed, retrying in {}ms", attempt, backoffMs);
+            try {
+                Thread.sleep(backoffMs);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Interrupted during commit retry", ie);
+            }
+        } catch (CommitFailedException e) {
+            // Non-retriable (e.g. rebalance invalidated our assignment)
+            log.error("Non-retriable commit failure", e);
+            throw e;
+        }
+    }
+    throw new RuntimeException("Exhausted " + maxRetries + " commit retries");
+}
+```
+
+## Rebalancing
+
+A rebalance is the process by which Kafka redistributes partitions among the consumers in a group. It is triggered when:
+
+- A new consumer joins the group
+- An existing consumer leaves (crash, shutdown, or `session.timeout.ms` expiry)
+- The number of partitions in a subscribed topic changes
+- A consumer calls `subscribe()` with a different topic list
+
+During a **stop-the-world** rebalance (the default behaviour before Kafka 2.4), **all** consumers in the group stop consuming for the duration of the rebalance. In large groups or with slow partition assignment strategies this can cause noticeable lag spikes.
+
+### Partition Assignment Strategies
+
+You configure the strategy with `partition.assignment.strategy`:
+
+| Strategy | Description | Rebalance Type |
+|---|---|---|
+| `RangeAssignor` | Assigns consecutive partitions per topic; default pre-2.4 | Stop-the-world |
+| `RoundRobinAssignor` | Distributes partitions evenly in round-robin order | Stop-the-world |
+| `StickyAssignor` | Minimises partition movement on rebalance while keeping balance | Stop-the-world |
+| `CooperativeStickyAssignor` | Incremental rebalancing — only revoked partitions pause | Incremental |
+
+<Tip>
+  Switch to `CooperativeStickyAssignor` to minimise rebalancing disruption. With incremental cooperative rebalancing, only the partitions that are actually moving between consumers are briefly paused — consumers keep processing their stable partitions throughout the rebalance.
+</Tip>
+
+```java title="AssignorConfig.java"
+props.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG,
+    CooperativeStickyAssignor.class.getName());
+```
+
+## Consumer Rebalance Listener
+
+Implement `ConsumerRebalanceListener` to run logic when partitions are assigned or revoked — for example to flush in-memory state or commit offsets before partitions move to another consumer.
+
+```java title="OffsetTrackingRebalanceListener.java"
+public class OffsetTrackingRebalanceListener implements ConsumerRebalanceListener {
+
+    private final KafkaConsumer<?, ?> consumer;
+    private final Map<TopicPartition, Long> pendingOffsets; // offsets to commit
+
+    public OffsetTrackingRebalanceListener(KafkaConsumer<?, ?> consumer,
+                                           Map<TopicPartition, Long> pendingOffsets) {
+        this.consumer = consumer;
+        this.pendingOffsets = pendingOffsets;
+    }
+
+    @Override
+    public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
+        // Commit offsets for the partitions we are losing BEFORE the rebalance completes
+        Map<TopicPartition, OffsetAndMetadata> toCommit = new HashMap<>();
+        for (TopicPartition tp : partitions) {
+            Long offset = pendingOffsets.get(tp);
+            if (offset != null) {
+                toCommit.put(tp, new OffsetAndMetadata(offset + 1));
+            }
+        }
+        if (!toCommit.isEmpty()) {
+            consumer.commitSync(toCommit);
+        }
+        pendingOffsets.keySet().removeAll(partitions);
+    }
+
+    @Override
+    public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
+        // Optionally seek to a custom position for newly assigned partitions
+        log.info("Assigned partitions: {}", partitions);
+    }
+}
+
+// Usage:
+consumer.subscribe(List.of("orders"), new OffsetTrackingRebalanceListener(consumer, pendingOffsets));
+```
+
+## Graceful Shutdown
+
+Calling `consumer.close()` from a shutdown hook is not safe because `close()` is not thread-safe — it modifies internal state that may be in use by your poll loop. The correct pattern is to call `consumer.wakeup()` from the shutdown hook, which causes the next `poll()` call to throw a `WakeupException` that you catch to exit cleanly.
+
+```java title="GracefulShutdown.java"
+KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
+consumer.subscribe(List.of("orders"));
+
+// Register shutdown hook — this runs in a separate JVM thread
+Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+    log.info("Shutdown signal received, waking up consumer...");
+    consumer.wakeup(); // thread-safe; interrupts poll()
+}));
+
+try {
+    while (true) {
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(200));
+        for (ConsumerRecord<String, String> record : records) {
+            process(record);
+        }
+        consumer.commitAsync();
+    }
+} catch (WakeupException e) {
+    // Expected on shutdown — do not log as an error
+    log.info("WakeupException caught — shutting down poll loop");
+} finally {
+    try {
+        consumer.commitSync(); // commit final offsets
+    } finally {
+        consumer.close();
+        log.info("Consumer closed cleanly");
+    }
+}
+```
+
+## Seeking to Specific Offsets
+
+Sometimes you need to replay messages from the beginning or jump to a precise position in the log. You can seek at any time after `poll()` has triggered partition assignment.
+
+```java title="SeekExamples.java"
+// Seek all assigned partitions to the beginning
+consumer.seekToBeginning(consumer.assignment());
+
+// Seek all assigned partitions to the end (skip all existing messages)
+consumer.seekToEnd(consumer.assignment());
+
+// Seek a specific partition to a known offset
+TopicPartition partition = new TopicPartition("orders", 2);
+consumer.seek(partition, 1000L); // next poll will return offset 1000
+
+// Seek to a timestamp (find the first offset at or after a given timestamp)
+Map<TopicPartition, Long> timestampMap = new HashMap<>();
+for (TopicPartition tp : consumer.assignment()) {
+    timestampMap.put(tp, Instant.parse("2024-06-01T00:00:00Z").toEpochMilli());
+}
+Map<TopicPartition, OffsetAndTimestamp> offsetMap = consumer.offsetsForTimes(timestampMap);
+offsetMap.forEach((tp, offsetAndTimestamp) -> {
+    if (offsetAndTimestamp != null) {
+        consumer.seek(tp, offsetAndTimestamp.offset());
+    }
+});
+```
+
+<Note>
+  `seekToBeginning()` and `seekToEnd()` are **lazy** — the seek is not applied until the next call to `poll()`. If you call `position()` immediately after seeking you will trigger the seek evaluation.
+</Note>
+
+## Pause and Resume
+
+You can temporarily stop fetching from specific partitions without leaving the consumer group. This is useful for applying back-pressure when a downstream system is slow.
+
+```java title="PauseResumeExample.java"
+Set<TopicPartition> slowPartitions = Set.of(new TopicPartition("orders", 0));
+
+while (true) {
+    ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
+
+    for (ConsumerRecord<String, String> record : records) {
+        if (downstreamIsOverloaded()) {
+            // Pause this partition — poll() will return no records for it
+            consumer.pause(slowPartitions);
+        } else {
+            // Resume when downstream recovers
+            consumer.resume(slowPartitions);
+        }
+        process(record);
+    }
+}
+```
+
+Paused partitions still count toward the consumer's group membership and heartbeat obligations — the consumer does not trigger a rebalance just because a partition is paused. You can inspect currently paused partitions with `consumer.paused()`.
+
+## Consumer Metrics
+
+These JMX metrics are the most useful for monitoring consumer health and diagnosing lag.
+
+| Metric | MBean Attribute | What It Tells You |
+|---|---|---|
+| `records-consumed-rate` | `kafka.consumer:type=consumer-fetch-manager-metrics` | Records consumed per second; your processing throughput |
+| `fetch-latency-avg` | `kafka.consumer:type=consumer-fetch-manager-metrics` | Average time (ms) to complete a fetch request |
+| `records-lag-max` | `kafka.consumer:type=consumer-fetch-manager-metrics` | Maximum lag across all assigned partitions; key SLA metric |
+| `commit-latency-avg` | `kafka.consumer:type=consumer-coordinator-metrics` | Average time (ms) to commit offsets |
+| `join-rate` | `kafka.consumer:type=consumer-coordinator-metrics` | Rebalance join rate; high value indicates instability |
+| `heartbeat-rate` | `kafka.consumer:type=consumer-coordinator-metrics` | Heartbeats sent per second; should be ~`1/heartbeat.interval.ms` |
+
+```java title="LagMonitoring.java"
+// Compute consumer lag programmatically
+Map<TopicPartition, Long> endOffsets = consumer.endOffsets(consumer.assignment());
+for (TopicPartition tp : consumer.assignment()) {
+    long currentOffset = consumer.position(tp);
+    long endOffset = endOffsets.get(tp);
+    long lag = endOffset - currentOffset;
+    log.info("Partition {} lag: {}", tp, lag);
+}
+```
